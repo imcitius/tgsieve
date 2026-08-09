@@ -78,16 +78,19 @@ view stops being where the time goes.
 Done: `.goreleaser.yaml` (darwin/linux × amd64/arm64, archives, checksums,
 Homebrew cask), release + CI workflows, version via ldflags.
 
-Left to do before `brew install imcitius/tap/tgsieve` works:
+`brew install imcitius/tap/tgsieve` works as of v0.1.0: the repository is
+public, the release carries darwin/linux × amd64/arm64 archives, and
+`imcitius/homebrew-tap` holds `Casks/tgsieve.rb`.
 
-1. Create the public tap repo `imcitius/homebrew-tap` (a bare repo with a
-   `Casks/` directory is enough; goreleaser commits the file).
-2. Add a `HOMEBREW_TAP_TOKEN` secret to this repo — a fine-grained PAT with
-   `contents: write` on the tap repo. Without it the release still publishes,
-   only the cask update is skipped.
-3. Make this repository public. Homebrew downloads release assets
-   unauthenticated, so a tap pointing at a private repo cannot install.
-4. Tag a release: `git tag v0.1.0 && git push --tags`.
+One step left to make releases fully hands-off: add a `HOMEBREW_TAP_TOKEN`
+secret to this repository — a fine-grained PAT with `contents: write` on
+`imcitius/homebrew-tap`. Until then every release publishes its binaries but
+skips the cask, and the cask has to be updated by hand:
+
+```bash
+gh release download vX.Y.Z -p checksums.txt   # sums for the four archives
+# edit Casks/tgsieve.rb in imcitius/homebrew-tap: version + four sha256s
+```
 
 Also still open:
 
