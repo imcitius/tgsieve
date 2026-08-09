@@ -101,9 +101,50 @@ func CurrentProvenance(ctx context.Context, dir, command, tool string) Provenanc
 	}
 	tracked := meaningfulChanges(status)
 	p.Dirty = tracked != ""
-	sum := sha256.Sum256([]byte(tracked))
+	// Units written by `terragrunt stack generate` live in .terragrunt-stack,
+	// which is normally gitignored — so git alone would report an unchanged
+	// tree after the generated units were replaced.
+	sum := sha256.Sum256([]byte(tracked + "\x00" + fingerprintGenerated(dir)))
 	p.Tree = hex.EncodeToString(sum[:])[:16]
 	return p
+}
+
+// GeneratedUnitsDir holds units materialized from a terragrunt.stack.hcl.
+const GeneratedUnitsDir = ".terragrunt-stack"
+
+// fingerprintGenerated hashes the units a stack file generated, which git does
+// not see.
+func fingerprintGenerated(dir string) string {
+	h := sha256.New()
+	var roots []string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		switch d.Name() {
+		case ".git", ".terragrunt-cache", ".terraform":
+			return filepath.SkipDir
+		case GeneratedUnitsDir:
+			roots = append(roots, p)
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	sort.Strings(roots)
+	for _, root := range roots {
+		rel, err := filepath.Rel(dir, root)
+		if err != nil {
+			rel = root
+		}
+		fmt.Fprintf(h, "%s\x00%s\x00", filepath.ToSlash(rel), fingerprintConfigs(root))
+	}
+	if len(roots) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // meaningfulChanges drops the working-tree entries a run creates for itself.

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,6 +24,27 @@ type lockInfo struct {
 	PID     int       `json:"pid"`
 	Started time.Time `json:"started"`
 	Host    string    `json:"host,omitempty"`
+}
+
+// Lock claims dir for this process, giving up after wait. Two pipelines racing
+// on one directory is normal in CI, where waiting a little beats failing the
+// build; wait of zero keeps the immediate-failure behaviour.
+func LockWait(ctx context.Context, dir string, wait time.Duration) (func(), error) {
+	deadline := time.Now().Add(wait)
+	for {
+		release, err := Lock(dir)
+		if err == nil {
+			return release, nil
+		}
+		if wait <= 0 || time.Now().After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // Lock claims dir for this process and returns the release function. A lock

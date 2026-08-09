@@ -186,6 +186,8 @@ func cmdPlan(args []string) (int, error) {
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
 	fast := fs.Bool("fast", false, "skip the refresh (-refresh=false): much faster, but blind to out-of-band changes")
+	noResolveRefs := fs.Bool("no-resolve-refs", false, "do not contact module remotes to pin floating refs (offline)")
+	lockWait := fs.Duration("lock-wait", 0, "how long to wait for a busy --keep-plans directory (e.g. 2m)")
 	resume := fs.Bool("resume", false, "only run units that have no plan in --keep-plans yet")
 	force := fs.Bool("force", false, "with --resume: reuse plans even though the working tree changed since")
 	fs.Usage = func() {
@@ -242,11 +244,15 @@ func cmdPlan(args []string) (int, error) {
 		Filters:        filters,
 		FilterAffected: *filterAffected,
 		Parallelism:    *parallelism,
+		NoResolveRefs:  *noResolveRefs,
 		Progress:       prog,
 	}
 
 	if *keepPlans != "" {
-		release, err := runner.Lock(*keepPlans)
+		if *lockWait > 0 {
+			fmt.Fprintf(os.Stderr, "waiting up to %s for %s\n", *lockWait, *keepPlans)
+		}
+		release, err := runner.LockWait(ctx, *keepPlans, *lockWait)
 		if err != nil {
 			return exitToolError, err
 		}

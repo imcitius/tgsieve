@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -376,5 +378,175 @@ func TestSourceChangesNamesMovedUnits(t *testing.T) {
 	partial := Provenance{Commit: "abc", Tree: "1"}
 	if len(was.SourceChanges(partial)) != 0 {
 		t.Error("missing source information must not be read as a change")
+	}
+}
+
+func TestSplitSourceUnderstandsTerragruntSources(t *testing.T) {
+	cases := []struct {
+		in       string
+		repo     string
+		ref      string
+		isRemote bool
+	}{
+		{"git::https://github.com/org/repo.git//modules/app?ref=v1.2.3",
+			"https://github.com/org/repo.git", "v1.2.3", true},
+		{"github.com/org/repo//modules/app?ref=main",
+			"github.com/org/repo", "main", true},
+		{"git::ssh://git@github.com/org/repo.git//app?ref=feature/x&depth=1",
+			"ssh://git@github.com/org/repo.git", "feature/x", true},
+		// No ref: nothing to pin.
+		{"git::https://github.com/org/repo.git//app", "", "", false},
+		// Local paths are not remotes.
+		{"/abs/path/modules/app?ref=v1", "", "", false},
+		{"./modules/app", "", "", false},
+	}
+	for _, c := range cases {
+		repo, ref, ok := splitSource(c.in)
+		if ok != c.isRemote {
+			t.Errorf("splitSource(%q) remote = %v, want %v", c.in, ok, c.isRemote)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if repo != c.repo || ref != c.ref {
+			t.Errorf("splitSource(%q) = (%q, %q), want (%q, %q)", c.in, repo, ref, c.repo, c.ref)
+		}
+	}
+}
+
+func TestRefResolverCachesPerRepoAndRef(t *testing.T) {
+	// Offline mode must not touch the network, and must leave sources usable.
+	r := newRefResolver(true)
+	src := "git::https://example.invalid/repo.git//app?ref=main"
+	if got := r.Resolve(context.Background(), src); got != src {
+		t.Errorf("with resolution disabled the source passes through, got %q", got)
+	}
+
+	// An unreachable remote leaves the source as-is rather than failing.
+	r = newRefResolver(false)
+	got := r.Resolve(context.Background(), "git::https://127.0.0.1:1/repo.git//app?ref=main")
+	if !strings.HasPrefix(got, "git::https://127.0.0.1:1/repo.git//app?ref=main") {
+		t.Errorf("unreachable remote should degrade to the raw source, got %q", got)
+	}
+	if strings.Contains(got, "#") {
+		t.Errorf("nothing should be appended when resolution fails: %q", got)
+	}
+	if len(r.cache) != 1 {
+		t.Errorf("the failed lookup should still be cached, got %d entries", len(r.cache))
+	}
+}
+
+func TestRefResolverDetectsMovedBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(repo, "main.tf"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	git("init", "-q", "-b", "main")
+	write(`resource "null_resource" "a" {}`)
+	git("add", "-A")
+	git("commit", "-qm", "one")
+
+	source := "git::file://" + repo + "//app?ref=main"
+	r := newRefResolver(false)
+	before := r.Resolve(context.Background(), source)
+	if !strings.Contains(before, "#") {
+		t.Fatalf("a reachable branch should resolve to a commit, got %q", before)
+	}
+
+	// Move the branch, exactly as someone pushing to main would.
+	write(`resource "null_resource" "a" { triggers = { v = "2" } }`)
+	git("add", "-A")
+	git("commit", "-qm", "two")
+
+	// A fresh resolver: the cache is per run, not across runs.
+	after := newRefResolver(false).Resolve(context.Background(), source)
+	if after == before {
+		t.Errorf("a moved branch must change the recorded source:\n  before %q\n  after  %q", before, after)
+	}
+
+	was := Provenance{Sources: map[string]string{"envs/a": before}}
+	now := Provenance{Sources: map[string]string{"envs/a": after}}
+	if was.SameGeneration(now) {
+		t.Error("plans made before the branch moved are a different generation")
+	}
+}
+
+func TestLockWaitGivesUpAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	start := time.Now()
+	if _, err := LockWait(context.Background(), dir, 2*time.Second); err == nil {
+		t.Fatal("waiting on a held lock must eventually fail")
+	}
+	if waited := time.Since(start); waited < time.Second {
+		t.Errorf("gave up after %v, expected it to keep trying for the full wait", waited)
+	}
+}
+
+func TestLockWaitAcquiresWhenReleased(t *testing.T) {
+	dir := t.TempDir()
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		release()
+	}()
+
+	got, err := LockWait(context.Background(), dir, 10*time.Second)
+	if err != nil {
+		t.Fatalf("should have got the lock once it was released: %v", err)
+	}
+	got()
+}
+
+func TestFingerprintGeneratedUnitsChangesWithTheirContent(t *testing.T) {
+	dir := t.TempDir()
+	unit := filepath.Join(dir, "envs", GeneratedUnitsDir, "app")
+	if err := os.MkdirAll(unit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(unit, "terragrunt.hcl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`inputs = { size = "small" }`)
+	before := fingerprintGenerated(dir)
+	if before == "" {
+		t.Fatal("generated units should fingerprint to something")
+	}
+
+	write(`inputs = { size = "large" }`)
+	if after := fingerprintGenerated(dir); after == before {
+		t.Error("regenerating a stack with different content must change the fingerprint")
+	}
+
+	if got := fingerprintGenerated(t.TempDir()); got != "" {
+		t.Errorf("a project without generated units has nothing to fingerprint, got %q", got)
 	}
 }

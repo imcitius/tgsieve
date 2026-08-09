@@ -40,6 +40,7 @@ type Options struct {
 	FilterAffected bool     // --filter-affected (--all only)
 	Parallelism    int      // --parallelism (--all only)
 	KnownUnits     []string // queue already discovered by the caller
+	NoResolveRefs  bool     // skip resolving git refs to commits (offline)
 	Progress       *Progress
 	Stderr         io.Writer
 }

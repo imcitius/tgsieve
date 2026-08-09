@@ -30,6 +30,7 @@ func ModuleSources(ctx context.Context, opts Options, units []string) map[string
 	if len(units) == 0 {
 		return nil
 	}
+	refs := newRefResolver(opts.NoResolveRefs)
 	workers := runtime.NumCPU()
 	if workers > 8 {
 		workers = 8
@@ -61,8 +62,9 @@ func ModuleSources(ctx context.Context, opts Options, units []string) map[string
 				if cfg.Terraform.Source == "" {
 					continue
 				}
+				resolved := refs.Resolve(ctx, cfg.Terraform.Source)
 				mu.Lock()
-				out[unit] = cfg.Terraform.Source
+				out[unit] = resolved
 				mu.Unlock()
 			}
 		}()

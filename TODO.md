@@ -100,17 +100,21 @@ unlabelled), cross-host lock handling (respected for six hours, then taken
 over, since pid liveness means nothing on another machine), and a two-week TTL
 on remembered durations with the age shown next to reused measurements.
 
-Still open:
+Also done: floating refs resolved to commits via `git ls-remote` (cached per
+repository and ref, `--no-resolve-refs` to disable, unreachable remotes degrade
+rather than fail), `.terragrunt-stack` units folded into the fingerprint, and
+`--lock-wait` for CI pipelines racing on one plan directory.
 
-- **Floating refs.** A source pinned to a branch (`?ref=main`) reads the same
-  string before and after the branch moves. Resolving it to a commit would
-  need a network call per unit, which is why it is not done here.
-- **Provenance for generated units.** `terragrunt stack generate` writes units
-  that do not exist until the stack is generated; the fingerprint sees the
-  generator, not the result.
-- **Lock contention UX.** A blocked run exits immediately. Waiting for the
-  lock with a timeout would be friendlier in CI, where two pipelines racing on
-  the same directory is normal rather than exceptional.
+The runner list is empty. What follows are the items that would justify
+reopening it:
+
+- **Provenance is advisory, not enforced.** `--force` still lets anyone mix
+  generations, and nothing stops a plan file being edited by hand. If plans
+  ever travel between machines — CI plans applied from a laptop — they should
+  be signed rather than merely described.
+- **`ls-remote` on every run.** Cheap for a handful of modules, wasteful for a
+  stack drawing on dozens. A short-lived cache keyed by repository and ref
+  would fix it; the current cache lives only for one run.
 
 ## Packaging
 

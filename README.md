@@ -129,6 +129,15 @@ whose ref moved invalidates the generation even though the repository did not
 change. Sources that cannot be resolved are recorded as unknown rather than
 assumed unchanged.
 
+A source pinned to a branch — or to a tag someone can move — reads identically
+before and after the code it names changes, so each remote ref is resolved to a
+commit with `git ls-remote`. That is one call per distinct repository and ref,
+not per unit, and `--no-resolve-refs` turns it off for offline or air-gapped
+runs. An unreachable remote degrades to the unresolved source rather than
+failing the run. Units materialized by `terragrunt stack generate` are
+fingerprinted too, since `.terragrunt-stack` is usually gitignored and git
+would otherwise report an unchanged tree.
+
 A `--keep-plans` directory is locked while a run writes to it, so two runs
 cannot interleave their plans into one incoherent report. A lock left by a
 crashed run is taken over automatically; a live one is reported:
@@ -139,7 +148,8 @@ crashed run is taken over automatically; a live one is reported:
 
 A lock written on another machine — a directory shared over a network mount —
 cannot be checked for liveness, so it is respected for six hours and taken over
-after that.
+after that. `--lock-wait 2m` waits for a busy directory instead of failing
+immediately, which is usually what a CI pipeline racing another one wants.
 
 Unit durations are remembered per directory, so after a resume the timings
 cover the whole stack rather than only the units that just ran. Reused
