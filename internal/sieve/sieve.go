@@ -92,6 +92,9 @@ type FailureGroup struct {
 	Headline string
 	Detail   []string
 	Units    []string
+	// Variants counts the distinct wordings folded into this group: the same
+	// cause reported against different resources or regions.
+	Variants int
 }
 
 // UnitTiming is how long one unit took, for --timings.
@@ -362,21 +365,26 @@ func collapse(res []model.Resource, cfg *config.Config) []Group {
 func groupFailures(units []model.Unit) []FailureGroup {
 	var out []FailureGroup
 	index := map[string]int{}
+	wordings := map[int]map[string]bool{}
 	for _, u := range units {
 		head := textutil.Headline(u.Error)
 		if head == "" {
 			head = "failed"
 		}
-		if i, ok := index[head]; ok {
-			out[i].Units = append(out[i].Units, u.Path)
-			continue
+		key := textutil.NormalizeError(head)
+		i, ok := index[key]
+		if !ok {
+			i = len(out)
+			index[key] = i
+			wordings[i] = map[string]bool{}
+			out = append(out, FailureGroup{
+				Headline: head,
+				Detail:   textutil.CleanError(u.Error, 8),
+			})
 		}
-		index[head] = len(out)
-		out = append(out, FailureGroup{
-			Headline: head,
-			Detail:   textutil.CleanError(u.Error, 8),
-			Units:    []string{u.Path},
-		})
+		out[i].Units = append(out[i].Units, u.Path)
+		wordings[i][head] = true
+		out[i].Variants = len(wordings[i])
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i].Units) > len(out[j].Units) })
 	return out

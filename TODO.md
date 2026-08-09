@@ -80,19 +80,25 @@ never looked at reality), root-cause grouping so one expired credential prints
 once rather than once per unit, and `--resume`, which compares the queue
 against the plans already in `--keep-plans` and runs only what is missing.
 
+Also done: error grouping now folds incidental differences (resource
+addresses, quoted and parenthesized identifiers, numbers, hashes) so one cause
+reported N slightly different ways prints once, saying how many wordings it
+covers; `--resume` records the commit plus a fingerprint of uncommitted changes
+and refuses to mix generations without `--force`; and exit codes separate a
+failed stack (3) from a failed tool (1), surviving changes (2) and an interrupt
+(130).
+
 Still open:
 
-- **Error taxonomy.** Grouping is by identical headline, which catches
-  credential and backend failures because their messages are identical. Errors
-  that differ only by a resource name or region still split into separate
-  groups; normalizing those would fold more of them together.
-- **Resume across code changes.** `--resume` reuses plans whatever happened to
-  the configuration in between. Recording the git SHA (and dirty state) beside
-  the plans, and refusing to mix generations without `--force`, would make it
-  safe rather than merely convenient.
-- **Partial stack failure exit code.** Everything non-zero is currently `1`.
-  Distinguishing "some units failed" from "tgsieve itself failed" would let CI
-  react differently.
+- **Provenance beyond git.** The generation check is git-only. A stack pulled
+  from a `--source` URL, or a repo-less directory, records nothing and resume
+  falls back to trusting the caller.
+- **Concurrent runs.** Two `tgsieve plan --keep-plans` against the same
+  directory will interleave their plans and overwrite each other's
+  provenance. A lock file would make that a clear error.
+- **Report timings for reused plans.** After `--resume` the timings section
+  only covers units from the last invocation; the reused ones show nothing,
+  which makes "slowest unit" misleading.
 
 ## Packaging
 

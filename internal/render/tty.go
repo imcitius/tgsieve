@@ -86,7 +86,13 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 			if len(g.Units) > 1 {
 				scope = plural(len(g.Units), "unit") + ", same error"
 			}
-			fmt.Fprintf(w, "  %s %s\n", p.red("✗"), p.bold(scope))
+			note := ""
+			if g.Variants > 1 {
+				// One cause, worded differently per unit; the message shown is
+				// one real example of it.
+				note = p.dim(fmt.Sprintf("  (%d wordings, showing one)", g.Variants))
+			}
+			fmt.Fprintf(w, "  %s %s%s\n", p.red("✗"), p.bold(scope), note)
 			if len(g.Units) > 1 {
 				shown := g.Units
 				extra := 0

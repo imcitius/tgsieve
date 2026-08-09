@@ -87,3 +87,31 @@ func TestCleanErrorDropsCachePaths(t *testing.T) {
 		t.Errorf("cache path not trimmed: %#v", got)
 	}
 }
+
+func TestNormalizeErrorFoldsIncidentalDifferences(t *testing.T) {
+	same := []string{
+		`Error: creating S3 Bucket (logs-prod-eu): AccessDenied`,
+		`Error: creating S3 Bucket (logs-stage-us): AccessDenied`,
+	}
+	if NormalizeError(same[0]) != NormalizeError(same[1]) {
+		t.Errorf("bucket names should not split a group:\n  %q\n  %q",
+			NormalizeError(same[0]), NormalizeError(same[1]))
+	}
+
+	byResource := []string{
+		`Error: Invalid count argument on aws_instance.web[0]`,
+		`Error: Invalid count argument on aws_instance.db[3]`,
+	}
+	if NormalizeError(byResource[0]) != NormalizeError(byResource[1]) {
+		t.Errorf("resource addresses should not split a group:\n  %q\n  %q",
+			NormalizeError(byResource[0]), NormalizeError(byResource[1]))
+	}
+
+	different := []string{
+		`Error: no valid credential sources found`,
+		`Error: Unsupported argument`,
+	}
+	if NormalizeError(different[0]) == NormalizeError(different[1]) {
+		t.Error("genuinely different errors must stay apart")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,5 +174,38 @@ func TestProgressLabelShowsRunningUnits(t *testing.T) {
 	p.planned = 1
 	if got := p.progressLabel(); got != "1/5 planned · 1 running" {
 		t.Errorf("label = %q", got)
+	}
+}
+
+func TestMeaningfulChangesIgnoresGeneratedArtifacts(t *testing.T) {
+	status := strings.Join([]string{
+		"?? envs/prod/a/.terragrunt-cache/abc/def/backend.tf",
+		" M envs/prod/a/terragrunt.hcl",
+		"?? state/envs/prod/a/terraform.tfstate",
+		"?? plans/envs/prod/a/tfplan.json",
+		"?? envs/prod/b/.terraform/providers/x",
+		"?? tfplan.tfplan",
+	}, "\n")
+
+	got := meaningfulChanges(status)
+	if got != " M envs/prod/a/terragrunt.hcl" {
+		t.Errorf("only real configuration changes should count, got:\n%q", got)
+	}
+}
+
+func TestProvenanceGenerationComparison(t *testing.T) {
+	a := Provenance{Commit: "abc", Tree: "1111"}
+	same := Provenance{Commit: "abc", Tree: "1111", Created: time.Now()}
+	edited := Provenance{Commit: "abc", Tree: "2222"}
+	moved := Provenance{Commit: "def", Tree: "1111"}
+
+	if !a.SameGeneration(same) {
+		t.Error("identical commit and tree is the same generation")
+	}
+	if a.SameGeneration(edited) {
+		t.Error("an edited working tree is a new generation")
+	}
+	if a.SameGeneration(moved) {
+		t.Error("a different commit is a new generation")
 	}
 }

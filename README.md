@@ -107,6 +107,20 @@ tgsieve plan --all --keep-plans ./plans --resume # runs the missing 9
 The final report covers all of them — reused plans and fresh ones — and says
 how many were reused.
 
+Reusing a plan is only sound if the code has not moved under it, so a fresh run
+records the commit and a fingerprint of the uncommitted changes in
+`.tgsieve-run.json` beside the plans, and `--resume` refuses to mix
+generations:
+
+```
+the plans in ./plans were made at 1cb275fd, the working tree is now at 4a91e0c2
+  re-run without --resume to plan the stack fresh, or pass --force to mix generations
+```
+
+The fingerprint ignores what a run creates for itself — `.terragrunt-cache`,
+`.terraform`, state and plan files — since otherwise no two runs would ever
+agree.
+
 While the run is in flight you get one status line and nothing else, plus any
 unit's failure the moment it happens rather than at the end:
 
@@ -135,8 +149,16 @@ FAILED (5)
       Error: no valid credential sources found
 ```
 
-Exit codes: `0` fine, `1` a unit failed, `2` changes survived the sieve (only
-with `--detailed-exitcode`).
+Exit codes distinguish the three ways a run can be unhappy, so CI can react to
+each differently:
+
+| code | meaning |
+| --- | --- |
+| `0` | ran fine |
+| `1` | tgsieve itself failed — bad flags, terragrunt would not start, unreadable plans |
+| `2` | changes survived the sieve (only with `--detailed-exitcode`) |
+| `3` | one or more units failed to plan |
+| `130` | interrupted with Ctrl-C |
 
 ## Noise rules
 

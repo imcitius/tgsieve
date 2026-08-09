@@ -24,6 +24,16 @@ var (
 	date    = ""
 )
 
+// Exit codes. A caller has to be able to tell a stack that failed from a tool
+// that broke, and neither from a plan that simply has changes in it.
+const (
+	exitOK        = 0
+	exitToolError = 1 // tgsieve itself could not do its job
+	exitChanges   = 2 // --detailed-exitcode: changes survived the sieve
+	exitUnitsFail = 3 // one or more units failed to plan
+	exitInterrupt = 130
+)
+
 func versionString() string {
 	s := "tgsieve " + version
 	if commit != "" {
@@ -47,6 +57,9 @@ Usage:
 
 The stack is never planned implicitly: without --all only the unit in the
 working directory runs.
+
+Exit codes: 0 fine · 1 tgsieve failed · 2 changes survived the sieve
+(--detailed-exitcode) · 3 a unit failed to plan · 130 interrupted.
 
 Examples:
   tgsieve plan                                  # this unit only
@@ -84,7 +97,7 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tgsieve: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitToolError)
 	}
 	os.Exit(code)
 }
@@ -167,32 +180,33 @@ func cmdPlan(args []string) (int, error) {
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
 	fast := fs.Bool("fast", false, "skip the refresh (-refresh=false): much faster, but blind to out-of-band changes")
 	resume := fs.Bool("resume", false, "only run units that have no plan in --keep-plans yet")
+	force := fs.Bool("force", false, "with --resume: reuse plans even though the working tree changed since")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "tgsieve plan [flags] [-- <tofu/terraform args>]\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
-		return 1, err
+		return exitToolError, err
 	}
 
 	cfg, err := cf.loadConfig()
 	if err != nil {
-		return 1, err
+		return exitToolError, err
 	}
 	// Filters select from a queue, and there is no queue without --all. Saying
 	// so beats silently widening the run to the whole stack.
 	if (len(filters) > 0 || *filterAffected) && !*all {
-		return 1, fmt.Errorf("--filter/--filter-affected select units from a stack: add --all")
+		return exitToolError, fmt.Errorf("--filter/--filter-affected select units from a stack: add --all")
 	}
 	if *parallelism > 0 && !*all {
-		return 1, fmt.Errorf("--parallelism paces a stack run: add --all")
+		return exitToolError, fmt.Errorf("--parallelism paces a stack run: add --all")
 	}
 	if *resume {
 		if *keepPlans == "" {
-			return 1, fmt.Errorf("--resume needs --keep-plans <dir>: that is where the earlier plans are")
+			return exitToolError, fmt.Errorf("--resume needs --keep-plans <dir>: that is where the earlier plans are")
 		}
 		if !*all {
-			return 1, fmt.Errorf("--resume picks up the rest of a stack run: add --all")
+			return exitToolError, fmt.Errorf("--resume picks up the rest of a stack run: add --all")
 		}
 	}
 
@@ -224,11 +238,16 @@ func cmdPlan(args []string) (int, error) {
 		Progress:       prog,
 	}
 
+	now := runner.CurrentProvenance(ctx, cf.dir, "plan")
+
 	reused := 0
 	if *resume {
+		if err := checkGeneration(*keepPlans, now, *force); err != nil {
+			return exitToolError, err
+		}
 		done, missing, err := resumeSplit(ctx, opts, *keepPlans)
 		if err != nil {
-			return 1, err
+			return exitToolError, err
 		}
 		reused = done
 		if len(missing) == 0 {
@@ -242,7 +261,13 @@ func cmdPlan(args []string) (int, error) {
 
 	res, err := runner.Run(ctx, opts)
 	if err != nil {
-		return 1, err
+		return exitToolError, err
+	}
+	if *keepPlans != "" && !*resume {
+		// Only a fresh run defines the generation; a resume adds to it.
+		if err := runner.WriteProvenance(*keepPlans, now); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not record plan provenance: %v\n", err)
+		}
 	}
 
 	rep := sieve.Apply(res.Run, cfg)
@@ -257,15 +282,20 @@ func cmdPlan(args []string) (int, error) {
 		// Whatever finished before Ctrl-C is still worth reading, so the
 		// report is printed first and the interruption reported after it.
 		fmt.Fprintln(os.Stderr, "interrupted — the report above covers the units that finished")
-		return 130, nil
+		return exitInterrupt, nil
 	}
-	if len(rep.ErroredUnits) > 0 || (res.ExitCode != 0 && len(res.Run.Units) == 0) {
-		return 1, nil
+	if len(rep.ErroredUnits) > 0 {
+		return exitUnitsFail, nil
+	}
+	if res.ExitCode != 0 && len(res.Run.Units) == 0 {
+		// terragrunt failed before any unit produced a plan: nothing ran, so
+		// this is a tooling or configuration problem, not a stack failure.
+		return exitToolError, nil
 	}
 	if *detailed && rep.HasChanges() {
-		return 2, nil
+		return exitChanges, nil
 	}
-	return 0, nil
+	return exitOK, nil
 }
 
 // hasRefreshFlag reports whether the caller already decided about refreshing.
@@ -291,6 +321,30 @@ func refreshDisabled(args []string) bool {
 		}
 	}
 	return false
+}
+
+// checkGeneration refuses to mix plans from one state of the code with a run
+// against another. A stale plan that still renders is the worst outcome here:
+// it looks exactly like a fresh one.
+func checkGeneration(dir string, now runner.Provenance, force bool) error {
+	was, err := runner.ReadProvenance(dir)
+	if err != nil {
+		if force {
+			fmt.Fprintf(os.Stderr, "warning: %v (continuing because --force)\n", err)
+			return nil
+		}
+		return fmt.Errorf("%w\n  re-run without --resume, or pass --force to reuse them anyway", err)
+	}
+	if was.SameGeneration(now) {
+		return nil
+	}
+	msg := fmt.Sprintf("the plans in %s were made at %s, the working tree is now at %s",
+		dir, was.Describe(), now.Describe())
+	if force {
+		fmt.Fprintf(os.Stderr, "warning: %s (continuing because --force)\n", msg)
+		return nil
+	}
+	return fmt.Errorf("%s\n  re-run without --resume to plan the stack fresh, or pass --force to mix generations", msg)
 }
 
 // resumeSplit compares the units the run would cover with the plans already
@@ -325,19 +379,19 @@ func resumeSplit(ctx context.Context, opts runner.Options, dir string) (int, []s
 func renderSaved(dir string, cfg *config.Config, cf commonFlags, detailed bool) (int, error) {
 	run, err := runner.Collect(dir)
 	if err != nil {
-		return 1, err
+		return exitToolError, err
 	}
 	rep := sieve.Apply(run, cfg)
 	render.TTY(os.Stdout, rep, cf.renderOpts())
 	if detailed && rep.HasChanges() {
-		return 2, nil
+		return exitChanges, nil
 	}
-	return 0, nil
+	return exitOK, nil
 }
 
 func cmdShow(args []string) (int, error) {
 	if len(args) == 0 {
-		return 1, fmt.Errorf("show needs a plan directory (the one you passed to --keep-plans)")
+		return exitToolError, fmt.Errorf("show needs a plan directory (the one you passed to --keep-plans)")
 	}
 	dir := args[0]
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
@@ -345,25 +399,28 @@ func cmdShow(args []string) (int, error) {
 	cf.bind(fs)
 	detailed := fs.Bool("detailed-exitcode", false, "exit 2 when changes survive the sieve")
 	if err := fs.Parse(args[1:]); err != nil {
-		return 1, err
+		return exitToolError, err
 	}
 	cfg, err := cf.loadConfig()
 	if err != nil {
-		return 1, err
+		return exitToolError, err
 	}
 	run, err := runner.Collect(dir)
 	if err != nil {
-		return 1, err
+		return exitToolError, err
 	}
 	if len(run.Units) == 0 {
-		return 1, fmt.Errorf("no tfplan.json found under %s", dir)
+		return exitToolError, fmt.Errorf("no tfplan.json found under %s", dir)
 	}
 	rep := sieve.Apply(run, cfg)
 	render.TTY(os.Stdout, rep, cf.renderOpts())
-	if *detailed && rep.HasChanges() {
-		return 2, nil
+	if len(rep.ErroredUnits) > 0 {
+		return exitUnitsFail, nil
 	}
-	return 0, nil
+	if *detailed && rep.HasChanges() {
+		return exitChanges, nil
+	}
+	return exitOK, nil
 }
 
 func cmdRules(args []string) error {
