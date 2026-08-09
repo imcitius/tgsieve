@@ -103,6 +103,10 @@ type reportEntry struct {
 }
 
 type Result struct {
+	// TFPath is the binary terragrunt actually used, as terragrunt reported
+	// it. Which binary ran is the first thing worth knowing when a whole stack
+	// fails to initialize, and nothing else in the output says it.
+	TFPath      string
 	Run         model.Run
 	ExitCode    int
 	Errors      []string
@@ -453,6 +457,9 @@ func stream(ctx context.Context, opts Options, res *Result, args []string) error
 				continue
 			}
 			mu.Lock()
+			if res.TFPath == "" && ll.TFPath != "" {
+				res.TFPath = ll.TFPath
+			}
 			switch ll.Level {
 			case "error":
 				msg := strings.TrimSpace(ll.Msg)

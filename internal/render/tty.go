@@ -81,6 +81,10 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 
 	if len(rep.ErroredUnits) > 0 {
 		fmt.Fprintf(w, "\n%s\n", p.bold(p.red(fmt.Sprintf("FAILED (%d)", len(rep.ErroredUnits)))))
+		if rep.TFPath != "" {
+			fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf(
+				"terragrunt ran %s — use --tf-path or TG_TF_PATH to choose another binary", rep.TFPath)))
+		}
 		for _, g := range rep.Failures {
 			scope := g.Units[0]
 			if len(g.Units) > 1 {

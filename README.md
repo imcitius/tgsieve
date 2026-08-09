@@ -47,6 +47,18 @@ Works with either backing binary: terragrunt defaults to `tofu`, and if that
 is not installed but `terraform` is, `tgsieve` points it at `terraform` rather
 than failing. Both are exercised against the same stack, including drift.
 
+If both are installed, terragrunt uses `tofu` — and a stack whose state and
+lock files were written by `terraform` will refuse to initialize under it:
+
+```
+Error: Backend initialization required: please run "tofu init"
+Error: Inconsistent dependency lock file
+```
+
+Choose the binary explicitly with `--tf-path terraform` or `TG_TF_PATH`. When
+units fail, the report names the binary terragrunt actually ran, since that is
+the first thing worth knowing.
+
 ## Install
 
 ```bash

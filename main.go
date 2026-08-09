@@ -319,6 +319,7 @@ func cmdPlan(args []string) (int, error) {
 	rep := sieve.Apply(res.Run, cfg)
 	rep.Wall = res.Duration
 	rep.NoRefresh = refreshDisabled(tfArgs)
+	rep.TFPath = res.TFPath
 	render.TTY(os.Stdout, rep, cf.renderOpts())
 	if reused > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of the plans above were reused from a previous run\n", reused)
