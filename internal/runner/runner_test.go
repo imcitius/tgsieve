@@ -51,3 +51,26 @@ func TestUnitNameIsProjectRelative(t *testing.T) {
 		t.Errorf("unitName = %q, want envs/prod/a", got)
 	}
 }
+
+func TestFilterArgs(t *testing.T) {
+	o := Options{Filters: []string{"envs/prod/*", "envs/stage/*"}, FilterAffected: true}
+	want := []string{"--filter", "envs/prod/*", "--filter", "envs/stage/*", "--filter-affected"}
+	if got := o.filterArgs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("filterArgs() = %v, want %v", got, want)
+	}
+	if got := (Options{}).filterArgs(); got != nil {
+		t.Errorf("no filters should produce no args, got %v", got)
+	}
+}
+
+func TestProgressLabel(t *testing.T) {
+	p := NewProgress(os.Stderr, false, false)
+	p.planned = 7
+	if got := p.progressLabel(); got != "7 planned" {
+		t.Errorf("without a known total: %q", got)
+	}
+	p.SetTotal(28)
+	if got := p.progressLabel(); got != "7/28 planned" {
+		t.Errorf("with a known total: %q", got)
+	}
+}

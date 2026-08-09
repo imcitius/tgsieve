@@ -60,18 +60,23 @@ view stops being where the time goes.
 
 ## Runner improvements
 
-- **Unit count up front.** `terragrunt find --format json` before the run to
-  turn the progress line into `7/28` instead of "7 seen".
-- **Per-unit timing in the report.** The run report already carries durations;
-  surface the slowest units under `--timings`.
-- **`--filter-affected` as a first-class flag** rather than via `--tg-args`,
-  plus `--filter` passthrough.
-- **Cancellation.** Ctrl-C currently kills terragrunt via context; make sure
-  partial plans still render instead of being discarded.
-- **OpenTofu.** `resolveTFPath` prefers tofu when present; test against tofu's
-  plan JSON, which has diverged slightly (e.g. `resource_drift` details).
-- **Non-tty progress.** Emit a plain line every N seconds so CI logs show
-  liveness without the spinner.
+Done: queue size up front via `terragrunt find` (so progress reads `7/28`),
+`--timings` with per-unit durations and wall time, first-class `--filter` /
+`--filter-affected`, graceful Ctrl-C (SIGINT is forwarded so terraform can
+release its locks; whatever finished still renders, the rest is reported as
+`NOT RUN`, exit 130), and a plain heartbeat line for non-tty runs.
+
+Still open:
+
+- **OpenTofu.** `resolveTFPath` prefers tofu when present, but nothing here has
+  been exercised against it. Its plan JSON has diverged slightly from
+  terraform's (`resource_drift` details in particular), and `terragrunt find`
+  output should be checked too.
+- **Progress during long single units.** The queue-size trick does nothing for
+  one big unit; terraform's own `-json` stream could drive a per-resource
+  counter there.
+- **Parallelism control.** `--parallelism` passthrough, plus a note in the
+  status line when units are queued behind the DAG rather than running.
 
 ## Packaging
 
@@ -82,15 +87,10 @@ Homebrew cask), release + CI workflows, version via ldflags.
 public, the release carries darwin/linux × amd64/arm64 archives, and
 `imcitius/homebrew-tap` holds `Casks/tgsieve.rb`.
 
-One step left to make releases fully hands-off: add a `HOMEBREW_TAP_TOKEN`
-secret to this repository — a fine-grained PAT with `contents: write` on
-`imcitius/homebrew-tap`. Until then every release publishes its binaries but
-skips the cask, and the cask has to be updated by hand:
-
-```bash
-gh release download vX.Y.Z -p checksums.txt   # sums for the four archives
-# edit Casks/tgsieve.rb in imcitius/homebrew-tap: version + four sha256s
-```
+`HOMEBREW_TAP_TOKEN` is now set, so the next tag updates the cask on its own —
+v0.1.0's cask was published by hand and is the last one that needs to be. The
+first automated run is worth watching: if the token lacks `contents: write` on
+the tap, goreleaser reports it at the very end of the release.
 
 Also still open:
 

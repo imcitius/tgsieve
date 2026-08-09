@@ -34,8 +34,22 @@ type Options struct {
 	JSONOutDir     string   // where per-unit tfplan.json land (temp if empty)
 	OutDir         string   // where binary plans land (skipped if empty)
 	TFPath         string   // --tf-path override
+	Filters        []string // --filter queries (--all only)
+	FilterAffected bool     // --filter-affected (--all only)
 	Progress       *Progress
 	Stderr         io.Writer
+}
+
+// filterArgs renders the queue filters shared by `find` and `run --all`.
+func (o Options) filterArgs() []string {
+	var args []string
+	for _, f := range o.Filters {
+		args = append(args, "--filter", f)
+	}
+	if o.FilterAffected {
+		args = append(args, "--filter-affected")
+	}
+	return args
 }
 
 // LogLine is one record of terragrunt's --log-format=json stream.
@@ -59,11 +73,12 @@ type reportEntry struct {
 }
 
 type Result struct {
-	Run      model.Run
-	ExitCode int
-	Errors   []string
-	Duration time.Duration
-	PlanDir  string
+	Run         model.Run
+	ExitCode    int
+	Errors      []string
+	Duration    time.Duration
+	PlanDir     string
+	Interrupted bool
 }
 
 // Run executes terragrunt, streams progress, and parses the produced plans.
@@ -96,6 +111,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	res := &Result{PlanDir: planDir}
 	start := time.Now()
 
+	if opts.Progress != nil {
+		// Knowing the size of the queue up front turns "7 units seen" into
+		// "7/28", which is the difference between a spinner and progress.
+		if opts.All {
+			if units, err := Discover(ctx, opts); err == nil {
+				opts.Progress.SetTotal(len(units))
+			}
+		} else {
+			opts.Progress.SetTotal(1)
+		}
+	}
+
 	var stop chan struct{}
 	if opts.Progress != nil {
 		stop = opts.Progress.Watch(planDir)
@@ -111,7 +138,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		opts.Progress.Done()
 	}
 	res.Duration = time.Since(start)
-	if runErr != nil {
+	res.Interrupted = ctx.Err() != nil
+	if runErr != nil && !res.Interrupted {
 		return res, runErr
 	}
 
@@ -124,6 +152,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	applyReport(&run, reportFile, res.Errors)
 	if !opts.All {
 		ensureUnit(&run, opts, res)
+	}
+	if res.Interrupted {
+		markInterrupted(&run)
 	}
 	res.Run = run
 	return res, nil
@@ -141,6 +172,7 @@ func runStack(ctx context.Context, opts Options, planDir, reportFile string, res
 	if opts.OutDir != "" {
 		args = append(args, "--out-dir", opts.OutDir)
 	}
+	args = append(args, opts.filterArgs()...)
 	args = append(args, opts.TerragruntArgs...)
 	args = append(args, "--", opts.Command)
 	args = append(args, opts.TFArgs...)
@@ -265,15 +297,48 @@ func ensureUnit(run *model.Run, opts Options, res *Result) {
 }
 
 func newCmd(ctx context.Context, opts Options, args []string) *exec.Cmd {
-	full := append([]string{args[0]}, args[1:]...)
-	if tf := resolveTFPath(opts.TFPath); tf != "" {
-		// insert right after the subcommand so it precedes the "--" separator
-		full = append([]string{full[0], "--tf-path", tf}, full[1:]...)
+	full := args
+	// Only `run` takes --tf-path; `find` rejects it.
+	if args[0] == "run" {
+		if tf := resolveTFPath(opts.TFPath); tf != "" {
+			full = append([]string{args[0], "--tf-path", tf}, args[1:]...)
+		}
 	}
 	cmd := exec.CommandContext(ctx, opts.Binary, full...)
 	cmd.Dir = opts.Dir
 	cmd.Env = os.Environ()
+	// Ctrl-C should let terragrunt and terraform unwind (and release their
+	// state locks) rather than being killed mid-write.
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 15 * time.Second
 	return cmd
+}
+
+// Discover lists the units the run would cover, without running anything.
+func Discover(ctx context.Context, opts Options) ([]string, error) {
+	args := []string{"find", "--format", "json", "--no-hidden"}
+	if opts.Command != "" {
+		args = append(args, "--queue-construct-as", opts.Command)
+	}
+	args = append(args, opts.filterArgs()...)
+	out, err := output(ctx, opts, args)
+	if err != nil {
+		return nil, err
+	}
+	var found []struct {
+		Type string `json:"type"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(out, &found); err != nil {
+		return nil, err
+	}
+	units := make([]string, 0, len(found))
+	for _, f := range found {
+		if f.Type == "unit" {
+			units = append(units, f.Path)
+		}
+	}
+	return units, nil
 }
 
 // output runs a terragrunt command and returns its stdout.
@@ -459,6 +524,21 @@ func applyReport(run *model.Run, reportFile string, errs []string) {
 	}
 }
 
+// markInterrupted relabels units that were cut short by Ctrl-C. A unit that
+// failed for a real reason carries terraform's diagnostic; one that was merely
+// killed mid-flight carries only the placeholder, and calling that "failed"
+// would send people hunting for a bug that is not there.
+func markInterrupted(run *model.Run) {
+	for i := range run.Units {
+		u := &run.Units[i]
+		if u.Errored && u.Error == failedPlaceholder {
+			u.Errored = false
+			u.Skipped = true
+			u.Error = "interrupted"
+		}
+	}
+}
+
 func firstErrorFor(unit string, errs []string) string {
 	for _, e := range errs {
 		if strings.Contains(e, unit) {
@@ -468,8 +548,12 @@ func firstErrorFor(unit string, errs []string) string {
 	if len(errs) > 0 {
 		return errs[0]
 	}
-	return "failed"
+	return failedPlaceholder
 }
+
+// failedPlaceholder is what a unit gets when terragrunt reported it as failed
+// but produced no diagnostic of its own.
+const failedPlaceholder = "failed"
 
 // resolveTFPath keeps terragrunt working on machines that only have terraform:
 // terragrunt defaults to tofu, which is often not installed.

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/imcitius/tgsieve/internal/config"
 	"github.com/imcitius/tgsieve/internal/model"
@@ -74,6 +75,21 @@ type Explanation struct {
 	Rule    string
 }
 
+// SkippedUnit is a unit that never ran: its dependency failed, it was excluded,
+// or the run was interrupted before it got a turn. Counting these as
+// "unchanged" would claim knowledge nobody has.
+type SkippedUnit struct {
+	Path   string
+	Reason string
+}
+
+// UnitTiming is how long one unit took, for --timings.
+type UnitTiming struct {
+	Path     string
+	Duration time.Duration
+	Changes  int
+}
+
 type RuleStat struct {
 	Rule  string
 	Attrs int
@@ -84,6 +100,7 @@ type RuleStat struct {
 type Report struct {
 	Groups         []Group
 	ErroredUnits   []model.Unit
+	SkippedUnits   []SkippedUnit
 	UnchangedUnits []string
 	Outputs        map[string][]model.AttrChange
 
@@ -97,6 +114,11 @@ type Report struct {
 	HiddenAttrs     int
 	RuleStats       []RuleStat
 	Explanations    []Explanation
+
+	// Timings is every unit that reported a duration, slowest first.
+	Timings []UnitTiming
+	// Wall is the duration of the whole run, when the caller knows it.
+	Wall time.Duration
 }
 
 func (r Report) HasChanges() bool { return r.Kept.Total() > 0 }
@@ -114,6 +136,14 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 		rep.UnitsTotal++
 		if u.Errored {
 			rep.ErroredUnits = append(rep.ErroredUnits, u)
+			continue
+		}
+		if u.Skipped {
+			reason := u.Error
+			if reason == "" {
+				reason = "not run"
+			}
+			rep.SkippedUnits = append(rep.SkippedUnits, SkippedUnit{Path: u.Path, Reason: reason})
 			continue
 		}
 		unitKept := 0
@@ -138,7 +168,11 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 		} else {
 			rep.UnitsChanged++
 		}
+		if u.Duration > 0 {
+			rep.Timings = append(rep.Timings, UnitTiming{Path: u.Path, Duration: u.Duration, Changes: unitKept})
+		}
 	}
+	sort.Slice(rep.Timings, func(i, j int) bool { return rep.Timings[i].Duration > rep.Timings[j].Duration })
 
 	rep.Groups = collapse(kept, cfg)
 	for _, s := range ruleIdx {

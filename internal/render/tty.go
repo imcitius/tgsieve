@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/imcitius/tgsieve/internal/model"
 	"github.com/imcitius/tgsieve/internal/sieve"
@@ -15,13 +16,15 @@ import (
 )
 
 type Options struct {
-	Color     bool
-	Verbose   bool // show attributes for creates/deletes too
-	ShowEmpty bool // list the unchanged units
-	Explain   bool // list every hidden attribute and the rule that hid it
-	MaxAttrs  int
-	MaxUnits  int
-	MaxValue  int
+	Color      bool
+	Timings    bool // list the slowest units
+	Verbose    bool // show attributes for creates/deletes too
+	ShowEmpty  bool // list the unchanged units
+	Explain    bool // list every hidden attribute and the rule that hid it
+	MaxAttrs   int
+	MaxUnits   int
+	MaxValue   int
+	MaxTimings int
 }
 
 func (o Options) withDefaults() Options {
@@ -33,6 +36,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.MaxValue == 0 {
 		o.MaxValue = 72
+	}
+	if o.MaxTimings == 0 {
+		o.MaxTimings = 10
 	}
 	return o
 }
@@ -84,6 +90,13 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 		}
 	}
 
+	if len(rep.SkippedUnits) > 0 {
+		fmt.Fprintf(w, "\n%s\n", p.bold(fmt.Sprintf("NOT RUN (%d)", len(rep.SkippedUnits))))
+		for _, u := range rep.SkippedUnits {
+			fmt.Fprintf(w, "  %s %s  %s\n", p.dim("·"), u.Path, p.dim(u.Reason))
+		}
+	}
+
 	var danger, updates, creates, drift []sieve.Group
 	for _, g := range rep.Groups {
 		switch {
@@ -123,7 +136,32 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 		}
 	}
 
+	timings(w, p, rep, opts)
 	footer(w, p, rep, opts)
+}
+
+func timings(w io.Writer, p painter, rep *sieve.Report, opts Options) {
+	if !opts.Timings || len(rep.Timings) == 0 {
+		return
+	}
+	shown := rep.Timings
+	if len(shown) > opts.MaxTimings {
+		shown = shown[:opts.MaxTimings]
+	}
+	fmt.Fprintf(w, "\n%s %s\n", p.bold("SLOWEST UNITS"), p.dim(fmt.Sprintf("(of %d)", len(rep.Timings))))
+	width := 0
+	for _, t := range shown {
+		if len(t.Path) > width {
+			width = len(t.Path)
+		}
+	}
+	for _, t := range shown {
+		note := p.dim("no changes")
+		if t.Changes > 0 {
+			note = p.dim(plural(t.Changes, "change"))
+		}
+		fmt.Fprintf(w, "  %-*s  %8s  %s\n", width, t.Path, t.Duration.Round(time.Millisecond), note)
+	}
 }
 
 func section(w io.Writer, p painter, opts Options, title string, groups []sieve.Group, withAttrs bool) {
@@ -310,8 +348,20 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 	}
 
 	fmt.Fprintf(w, "\n%s  %s\n", p.bold("SUMMARY"), strings.Join(parts, "  "))
-	fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("%d units · %d with changes · %d unchanged · %d failed",
-		rep.UnitsTotal, rep.UnitsChanged, len(rep.UnchangedUnits), len(rep.ErroredUnits))))
+	line := fmt.Sprintf("%d units · %d with changes · %d unchanged · %d failed",
+		rep.UnitsTotal, rep.UnitsChanged, len(rep.UnchangedUnits), len(rep.ErroredUnits))
+	if n := len(rep.SkippedUnits); n > 0 {
+		line += fmt.Sprintf(" · %d not run", n)
+	}
+	if rep.Wall > 0 {
+		line += " · " + rep.Wall.Round(100*time.Millisecond).String()
+	}
+	fmt.Fprintf(w, "  %s\n", p.dim(line))
+	if len(rep.Timings) > 0 && !opts.Timings {
+		slowest := rep.Timings[0]
+		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("slowest: %s (%s) — --timings for the rest",
+			slowest.Path, slowest.Duration.Round(time.Millisecond))))
+	}
 
 	if rep.HiddenAttrs > 0 || rep.HiddenResources > 0 {
 		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("sieved: %d attributes and %d resources hidden by %s%s",

@@ -165,3 +165,21 @@ func TestDriftGoesToItsOwnBucket(t *testing.T) {
 		t.Error("hide.drift should remove drift entirely")
 	}
 }
+
+func TestSkippedUnitsAreNotCountedAsUnchanged(t *testing.T) {
+	run := model.Run{Units: []model.Unit{
+		{Path: "a", Skipped: true, Error: "skipped: dependency failed"},
+		{Path: "b"},
+	}}
+
+	rep := Apply(run, config.Default())
+	if len(rep.SkippedUnits) != 1 || rep.SkippedUnits[0].Path != "a" {
+		t.Fatalf("skipped units = %+v", rep.SkippedUnits)
+	}
+	if got := rep.UnchangedUnits; len(got) != 1 || got[0] != "b" {
+		t.Errorf("only the unit that actually ran is unchanged, got %v", got)
+	}
+	if rep.SkippedUnits[0].Reason != "skipped: dependency failed" {
+		t.Errorf("reason lost: %q", rep.SkippedUnits[0].Reason)
+	}
+}

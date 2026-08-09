@@ -51,6 +51,8 @@ working directory runs.
 Examples:
   tgsieve plan                                  # this unit only
   tgsieve plan --all                            # the whole stack below here
+  tgsieve plan --all --filter-affected          # only what changed vs main
+  tgsieve plan --all --timings                  # with the slowest units
   tgsieve plan -C envs/prod --all -- -refresh=false
   tgsieve plan --all --keep-plans ./plans --out-dir ./tfplans
   tgsieve show ./plans --explain
@@ -87,6 +89,15 @@ func main() {
 	os.Exit(code)
 }
 
+// stringList collects a flag that may be repeated.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 type commonFlags struct {
 	dir        string
 	configPath string
@@ -95,6 +106,7 @@ type commonFlags struct {
 	explain    bool
 	noSieve    bool
 	noColor    bool
+	timings    bool
 	maxAttrs   int
 	maxUnits   int
 }
@@ -107,6 +119,7 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.explain, "explain", false, "show every attribute the sieve hid, and which rule hid it")
 	fs.BoolVar(&c.noSieve, "no-sieve", false, "disable noise rules (still collapses duplicates)")
 	fs.BoolVar(&c.noColor, "no-color", false, "disable color")
+	fs.BoolVar(&c.timings, "timings", false, "list the slowest units")
 	fs.IntVar(&c.maxAttrs, "max-attrs", 12, "max attributes shown per resource")
 	fs.IntVar(&c.maxUnits, "max-units", 6, "max unit names listed per collapsed group")
 }
@@ -117,6 +130,7 @@ func (c *commonFlags) renderOpts() render.Options {
 		Verbose:   c.verbose,
 		ShowEmpty: c.showEmpty,
 		Explain:   c.explain,
+		Timings:   c.timings,
 		MaxAttrs:  c.maxAttrs,
 		MaxUnits:  c.maxUnits,
 	}
@@ -146,7 +160,10 @@ func cmdPlan(args []string) (int, error) {
 	tfPath := fs.String("tf-path", "", "tofu/terraform binary terragrunt should call")
 	binary := fs.String("binary", "terragrunt", "terragrunt binary")
 	detailed := fs.Bool("detailed-exitcode", false, "exit 2 when changes survive the sieve, 0 when none")
-	tgArgs := fs.String("tg-args", "", "extra terragrunt flags, space separated (e.g. \"--filter-affected\")")
+	tgArgs := fs.String("tg-args", "", "extra terragrunt flags, space separated")
+	var filters stringList
+	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
+	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "tgsieve plan [flags] [-- <tofu/terraform args>]\n\n")
 		fs.PrintDefaults()
@@ -158,6 +175,11 @@ func cmdPlan(args []string) (int, error) {
 	cfg, err := cf.loadConfig()
 	if err != nil {
 		return 1, err
+	}
+	// Filters select from a queue, and there is no queue without --all. Saying
+	// so beats silently widening the run to the whole stack.
+	if (len(filters) > 0 || *filterAffected) && !*all {
+		return 1, fmt.Errorf("--filter/--filter-affected select units from a stack: add --all")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -177,6 +199,8 @@ func cmdPlan(args []string) (int, error) {
 		JSONOutDir:     *keepPlans,
 		OutDir:         *outDir,
 		TFPath:         *tfPath,
+		Filters:        filters,
+		FilterAffected: *filterAffected,
 		Progress:       prog,
 	})
 	if err != nil {
@@ -184,8 +208,15 @@ func cmdPlan(args []string) (int, error) {
 	}
 
 	rep := sieve.Apply(res.Run, cfg)
+	rep.Wall = res.Duration
 	render.TTY(os.Stdout, rep, cf.renderOpts())
 
+	if res.Interrupted {
+		// Whatever finished before Ctrl-C is still worth reading, so the
+		// report is printed first and the interruption reported after it.
+		fmt.Fprintln(os.Stderr, "interrupted — the report above covers the units that finished")
+		return 130, nil
+	}
 	if len(rep.ErroredUnits) > 0 || (res.ExitCode != 0 && len(res.Run.Units) == 0) {
 		return 1, nil
 	}

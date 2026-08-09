@@ -24,15 +24,28 @@ type Progress struct {
 
 	mu       sync.Mutex
 	units    map[string]bool
+	total    int
 	planned  int
 	errors   int
 	frame    int
 	start    time.Time
+	lastBeat time.Time
 	finished bool
 }
 
+// heartbeat is how often a non-tty run reports that it is still alive.
+const heartbeat = 30 * time.Second
+
+// SetTotal records how many units the run is expected to cover.
+func (p *Progress) SetTotal(n int) {
+	p.mu.Lock()
+	p.total = n
+	p.mu.Unlock()
+}
+
 func NewProgress(w io.Writer, tty, verbose bool) *Progress {
-	return &Progress{w: w, tty: tty, verbose: verbose, units: map[string]bool{}, start: time.Now()}
+	now := time.Now()
+	return &Progress{w: w, tty: tty, verbose: verbose, units: map[string]bool{}, start: now, lastBeat: now}
 }
 
 func (p *Progress) Unit(dir string) {
@@ -75,11 +88,14 @@ func (p *Progress) Raw(line string) {
 // have actually produced a plan, and returns a channel to stop it.
 func (p *Progress) Watch(planDir string) chan struct{} {
 	stop := make(chan struct{})
-	if !p.tty {
-		return stop
-	}
 	go func() {
-		t := time.NewTicker(120 * time.Millisecond)
+		interval := 120 * time.Millisecond
+		if !p.tty {
+			// No spinner to animate; just poll often enough for the heartbeat
+			// to be roughly on time.
+			interval = 2 * time.Second
+		}
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		poll := 0
 		for {
@@ -88,7 +104,7 @@ func (p *Progress) Watch(planDir string) chan struct{} {
 				return
 			case <-t.C:
 				poll++
-				if poll%4 == 0 {
+				if !p.tty || poll%4 == 0 {
 					n := countPlans(planDir)
 					p.mu.Lock()
 					p.planned = n
@@ -97,7 +113,11 @@ func (p *Progress) Watch(planDir string) chan struct{} {
 				p.mu.Lock()
 				p.frame++
 				p.mu.Unlock()
-				p.draw()
+				if p.tty {
+					p.draw()
+				} else {
+					p.beat()
+				}
 			}
 		}
 	}()
@@ -111,6 +131,32 @@ func (p *Progress) Done() {
 	p.clear()
 }
 
+// beat prints a plain liveness line for logs that cannot show a spinner.
+func (p *Progress) beat() {
+	p.mu.Lock()
+	if p.finished || time.Since(p.lastBeat) < heartbeat {
+		p.mu.Unlock()
+		return
+	}
+	p.lastBeat = time.Now()
+	line := fmt.Sprintf("… %s · %d units seen · %s elapsed",
+		p.progressLabel(), len(p.units), time.Since(p.start).Truncate(time.Second))
+	if p.errors > 0 {
+		line += fmt.Sprintf(" · %d failed", p.errors)
+	}
+	p.mu.Unlock()
+	fmt.Fprintln(p.w, line)
+}
+
+// progressLabel is "7/28 planned" when the queue size is known, "7 planned"
+// when it is not. Caller holds the lock.
+func (p *Progress) progressLabel() string {
+	if p.total > 0 {
+		return fmt.Sprintf("%d/%d planned", p.planned, p.total)
+	}
+	return fmt.Sprintf("%d planned", p.planned)
+}
+
 func (p *Progress) draw() {
 	if !p.tty {
 		return
@@ -121,8 +167,8 @@ func (p *Progress) draw() {
 		return
 	}
 	s := string(spinner[p.frame%len(spinner)])
-	line := fmt.Sprintf("%s planning · %d units seen · %d done · %s",
-		s, len(p.units), p.planned, time.Since(p.start).Truncate(time.Second))
+	line := fmt.Sprintf("%s planning · %s · %s",
+		s, p.progressLabel(), time.Since(p.start).Truncate(time.Second))
 	if p.errors > 0 {
 		line += fmt.Sprintf(" · %s", p.red(fmt.Sprintf("%d failed", p.errors)))
 	}

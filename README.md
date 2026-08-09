@@ -8,24 +8,14 @@ between a tag timestamp and the ninth identical `count` instance.
 prose, throws away the noise you declared as noise, collapses everything that
 repeats, and prints what is left.
 
-```
-DESTROY / REPLACE (3)
-  ± envs/dev/b  null_resource.pin
-      id               "972339063827744647" → (known after apply)
-      triggers.region  "eu-west-1" → "us-east-1"  forces replacement
-  - envs/prod/c  terraform_data.extra[0-1] ×2
-      3 attributes (-v to show)
+<p align="center">
+  <img src="docs/demo.svg" width="700"
+       alt="Terminal output: a DESTROY/REPLACE section showing one replacement with the attribute that forces it, a collapsed update across five units, the slowest units, and a summary line.">
+</p>
 
-UPDATE (5)
-  ~ 5 units  terraform_data.cfg ×5
-      in envs/dev/a, envs/dev/b, envs/prod/a, envs/prod/b, envs/prod/c
-      input.size  "small" → "large"
-      (2 attributes hidden by rules)
-
-SUMMARY  ±1 replace  -2 destroy  ~5 update
-  5 units · 5 with changes · 0 unchanged · 0 failed
-  sieved: 10 attributes and 0 resources hidden by 2 rules (--explain)
-```
+That is five units of a terragrunt plan — the same run terraform prints as
+several hundred lines. Every number in it is real output, not a mock-up; the
+image is regenerated from an actual run (see [Development](#development)).
 
 ## How it works
 
@@ -81,9 +71,20 @@ mistyped command touches one unit rather than the whole estate — the same
 default will hold for `apply` when it lands.
 
 Useful flags: `-v` (attributes for creates and destroys too), `--show-empty`,
-`--explain`, `--no-sieve`, `--no-color`, `--max-attrs`, `--max-units`,
-`--out-dir` (keep binary plans so you can apply exactly what you reviewed),
-`--tg-args "--filter-affected"` (pass extra flags to terragrunt itself).
+`--explain`, `--timings` (slowest units), `--no-sieve`, `--no-color`,
+`--max-attrs`, `--max-units`, `--out-dir` (keep binary plans so you can apply
+exactly what you reviewed), `--tg-args` (pass extra flags to terragrunt).
+
+Scoping a stack run: `--filter <query>` (repeatable) and `--filter-affected`
+(only units touched between `main` and `HEAD`) are passed through to
+terragrunt. Both need `--all`, because there is no queue to filter without it.
+
+While the run is in flight you get one status line — `7/28 planned`, the queue
+size coming from `terragrunt find` — plus any unit's failure the moment it
+happens rather than at the end. Outside a terminal that becomes a plain
+heartbeat line every 30 seconds, so CI logs still show progress. Ctrl-C stops
+the run, prints the report for whatever finished, lists the rest under
+`NOT RUN`, and exits 130.
 
 Exit codes: `0` fine, `1` a unit failed, `2` changes survived the sieve (only
 with `--detailed-exitcode`).
@@ -158,6 +159,14 @@ paths), `**` matches anything, `?` matches one non-`/` character.
 
 ```bash
 go test ./...
+```
+
+The README image is generated from a real run, so it cannot drift from what
+the tool prints:
+
+```bash
+script -q /dev/null sh -c "tgsieve plan --all --timings 2>/dev/null" > demo.ansi
+docs/ansi2svg.py demo.ansi docs/demo.svg --title "tgsieve plan --all --timings"
 ```
 
 Releases are cut by tagging: `git tag v0.1.0 && git push --tags` runs
