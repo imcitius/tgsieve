@@ -17,6 +17,19 @@ That is five units of a terragrunt plan — the same run terraform prints as
 several hundred lines. Every number in it is real output, not a mock-up; the
 image is regenerated from an actual run (see [Development](#development)).
 
+The report nests three deep — **where**, then **what**, then **which fields**:
+
+```
+UPDATE (5)
+  envs/prod/c                            ← the unit, said once
+    ~ aws_s3_bucket.this                 ← the resource
+        tags_all.entity  "tgb" → "tgc"   ← the attributes that changed
+```
+
+A change collapsed across units replaces the directory with the set it covers
+(`5 units  envs/dev/a, envs/dev/b, …`), so the first column always answers the
+same question.
+
 ## How it works
 
 There is no screen-scraping. `tgsieve` asks terragrunt for machine-readable

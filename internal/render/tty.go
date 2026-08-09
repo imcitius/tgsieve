@@ -200,6 +200,10 @@ func timings(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 	}
 }
 
+// section prints one severity band, nested three deep: the scope a change
+// belongs to, then the resource, then the attributes. Repeating the directory
+// on every resource line — which is what a flat list does — buries the one
+// piece of context a reader navigates by.
 func section(w io.Writer, p painter, opts Options, title string, groups []sieve.Group, withAttrs bool) {
 	if len(groups) == 0 {
 		return
@@ -209,17 +213,74 @@ func section(w io.Writer, p painter, opts Options, title string, groups []sieve.
 		total += g.Instances()
 	}
 	fmt.Fprintf(w, "\n%s %s\n", p.bold(title), p.dim(fmt.Sprintf("(%d)", total)))
+	for _, sc := range scopes(groups) {
+		renderScope(w, p, opts, sc, withAttrs)
+	}
+}
+
+// scope is a set of changes that share the same place: one unit, or the same
+// several units when a change was collapsed across them.
+type scope struct {
+	units  []string
+	groups []sieve.Group
+}
+
+func (s scope) multi() bool { return len(s.units) > 1 }
+
+// scopes buckets groups by where they happened, keeping changes that span the
+// same set of units together.
+func scopes(groups []sieve.Group) []scope {
+	index := map[string]int{}
+	var out []scope
 	for _, g := range groups {
+		key := strings.Join(g.Units, "\x00")
+		i, ok := index[key]
+		if !ok {
+			i = len(out)
+			index[key] = i
+			out = append(out, scope{units: g.Units})
+		}
+		out[i].groups = append(out[i].groups, g)
+	}
+	// Widest blast radius first, then alphabetically: a change touching twelve
+	// units is a different kind of news from one touching a single directory.
+	sort.SliceStable(out, func(i, j int) bool {
+		if a, b := len(out[i].units), len(out[j].units); a != b {
+			return a > b
+		}
+		return strings.Join(out[i].units, ",") < strings.Join(out[j].units, ",")
+	})
+	return out
+}
+
+func renderScope(w io.Writer, p painter, opts Options, sc scope, withAttrs bool) {
+	label := ""
+	switch {
+	case len(sc.units) == 0:
+		label = p.dim("(unknown unit)")
+	case sc.multi():
+		shown := sc.units
+		extra := 0
+		if len(shown) > opts.MaxUnits {
+			extra = len(shown) - opts.MaxUnits
+			shown = shown[:opts.MaxUnits]
+		}
+		list := strings.Join(shown, ", ")
+		if extra > 0 {
+			list += fmt.Sprintf(", +%d more", extra)
+		}
+		label = p.bold(plural(len(sc.units), "unit")) + "  " + p.dim(list)
+	default:
+		label = p.bold(sc.units[0])
+	}
+	fmt.Fprintf(w, "  %s\n", label)
+	for _, g := range sc.groups {
 		renderGroup(w, p, opts, g, withAttrs)
 	}
 }
 
 func renderGroup(w io.Writer, p painter, opts Options, g sieve.Group, withAttrs bool) {
 	sym := p.action(g.Action, g.Action.Symbol())
-	scope := g.Sample.Unit
-	if len(g.Units) > 1 {
-		scope = fmt.Sprintf("%d units", len(g.Units))
-	}
 	addr := g.Sample.BaseAddress
 	if idx := g.IndexLabel(); idx != "" {
 		addr += p.dim(idx)
@@ -228,28 +289,14 @@ func renderGroup(w io.Writer, p painter, opts Options, g sieve.Group, withAttrs 
 	if g.Instances() > 1 {
 		count = p.dim(fmt.Sprintf(" ×%d", g.Instances()))
 	}
-	fmt.Fprintf(w, "  %s %s  %s%s\n", sym, p.bold(scope), addr, count)
-
-	if len(g.Units) > 1 {
-		shown := g.Units
-		extra := 0
-		if len(shown) > opts.MaxUnits {
-			extra = len(shown) - opts.MaxUnits
-			shown = shown[:opts.MaxUnits]
-		}
-		line := strings.Join(shown, ", ")
-		if extra > 0 {
-			line += fmt.Sprintf(", +%d more", extra)
-		}
-		fmt.Fprintf(w, "      %s %s\n", p.dim("in"), p.dim(line))
-	}
+	fmt.Fprintf(w, "    %s %s%s\n", sym, addr, count)
 
 	// A destroy takes the whole resource with it; listing its attributes says
 	// nothing a reader can act on.
 	showAttrs := withAttrs && (g.Action != model.ActionDelete || opts.Verbose)
 	if !showAttrs || len(g.Sample.Attrs) == 0 {
 		if n := len(g.Sample.Attrs); n > 0 && !showAttrs {
-			fmt.Fprintf(w, "      %s\n", p.dim(fmt.Sprintf("%d attributes (-v to show)", n)))
+			fmt.Fprintf(w, "        %s\n", p.dim(plural(n, "attribute")+" (-v to show)"))
 		}
 		renderHidden(w, p, g)
 		return
@@ -281,21 +328,19 @@ func renderGroup(w io.Writer, p painter, opts Options, g sieve.Group, withAttrs 
 		if a.ForcesReplace {
 			mark = "  " + p.purple("forces replacement")
 		}
-		fmt.Fprintf(w, "      %-*s  %s%s\n", width, a.Path, val, mark)
+		fmt.Fprintf(w, "        %-*s  %s%s\n", width, a.Path, val, mark)
 	}
 	if extra > 0 {
-		fmt.Fprintf(w, "      %s\n", p.dim(fmt.Sprintf("… %d more attributes", extra)))
+		fmt.Fprintf(w, "        %s\n", p.dim("… "+plural(extra, "more attribute")))
 	}
 	renderHidden(w, p, g)
 }
 
 func humanAge(d time.Duration) string {
-	switch {
-	case d > 48*time.Hour:
+	if d > 48*time.Hour {
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	default:
-		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
 func varyLabel(g sieve.Group) string {
@@ -309,7 +354,7 @@ func renderHidden(w io.Writer, p painter, g sieve.Group) {
 	if len(g.Sample.Hidden) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "      %s\n", p.dim(fmt.Sprintf("(%d attributes hidden by rules)", len(g.Sample.Hidden))))
+	fmt.Fprintf(w, "        %s\n", p.dim("("+plural(len(g.Sample.Hidden), "attribute")+" hidden by rules)"))
 }
 
 func renderValue(p painter, a model.AttrChange, max int) string {

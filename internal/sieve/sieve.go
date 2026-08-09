@@ -34,17 +34,28 @@ func (g Group) Instances() int { return len(g.Members) }
 
 // IndexLabel summarizes the instance indices behind this group, e.g. "[0-11]".
 func (g Group) IndexLabel() string {
-	nums := []int{}
-	other := []string{}
+	// A group can span units, and each of them contributes its own instances.
+	// The label describes which indices exist, not how many units have them,
+	// so "[2,2,2,2]" for four units holding index 2 is just noise.
+	numSet := map[int]bool{}
+	otherSet := map[string]bool{}
 	for _, m := range g.Members {
 		switch v := m.Index.(type) {
 		case nil:
 			// single instance
 		case float64:
-			nums = append(nums, int(v))
+			numSet[int(v)] = true
 		case string:
-			other = append(other, v)
+			otherSet[v] = true
 		}
+	}
+	nums := make([]int, 0, len(numSet))
+	for n := range numSet {
+		nums = append(nums, n)
+	}
+	other := make([]string, 0, len(otherSet))
+	for o := range otherSet {
+		other = append(other, o)
 	}
 	sort.Ints(nums)
 	parts := []string{}
