@@ -212,3 +212,76 @@ func TestFailuresGroupByRootCause(t *testing.T) {
 		t.Error("the group kept no detail to act on")
 	}
 }
+
+func TestNormalizeEmptyAsNullIsOptIn(t *testing.T) {
+	mk := func() model.Run {
+		return model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+			res("a", "aws_x.y", "aws_x", "y", model.ActionUpdate,
+				attr("description", "", nil),
+				attr("size", "small", "large")),
+		}}}}
+	}
+
+	// Default: nothing is normalized, because "" -> null is someone else's
+	// judgement call to make.
+	off := Apply(mk(), config.Default())
+	if len(off.Groups) != 1 || len(off.Groups[0].Sample.Attrs) != 2 {
+		t.Fatalf("without config both attrs survive: %+v", off.Groups)
+	}
+	if off.Normalized != 0 {
+		t.Errorf("Normalized = %d, want 0", off.Normalized)
+	}
+
+	on := config.Default()
+	yes := true
+	on.Normalize.EmptyAsNull = &yes
+	rep := Apply(mk(), on)
+	if len(rep.Groups) != 1 || len(rep.Groups[0].Sample.Attrs) != 1 {
+		t.Fatalf("empty-to-null should drop, leaving the real change: %+v", rep.Groups)
+	}
+	if rep.Groups[0].Sample.Attrs[0].Path != "size" {
+		t.Errorf("wrong attribute survived: %+v", rep.Groups[0].Sample.Attrs)
+	}
+	if rep.Normalized != 1 {
+		t.Errorf("Normalized = %d, want 1", rep.Normalized)
+	}
+}
+
+func TestNormalizeReorderIgnore(t *testing.T) {
+	reordered := model.AttrChange{Path: "cidrs", Kind: model.KindReordered, Count: 4}
+	run := model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+		res("a", "aws_x.y", "aws_x", "y", model.ActionUpdate, reordered),
+	}}}}
+
+	shown := Apply(run, config.Default())
+	if len(shown.Groups) != 1 {
+		t.Fatalf("by default a reordering is still reported: %+v", shown.Groups)
+	}
+
+	cfg := config.Default()
+	cfg.Normalize.Reorder = "ignore"
+	hidden := Apply(run, cfg)
+	if len(hidden.Groups) != 0 {
+		t.Errorf("reorder: ignore should remove it entirely: %+v", hidden.Groups)
+	}
+	if hidden.Normalized != 1 {
+		t.Errorf("Normalized = %d, want 1", hidden.Normalized)
+	}
+}
+
+func TestNormalizeDoesNotTouchUnknownValues(t *testing.T) {
+	// "" -> (known after apply) is not an empty-to-null difference; the new
+	// value is simply not known yet.
+	a := model.AttrChange{Path: "arn", Before: "", AfterUnknown: true}
+	run := model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+		res("a", "aws_x.y", "aws_x", "y", model.ActionUpdate, a),
+	}}}}
+	cfg := config.Default()
+	yes := true
+	cfg.Normalize.EmptyAsNull = &yes
+
+	rep := Apply(run, cfg)
+	if len(rep.Groups) != 1 {
+		t.Fatalf("an unknown value must survive normalization: %+v", rep.Groups)
+	}
+}

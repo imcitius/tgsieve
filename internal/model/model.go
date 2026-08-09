@@ -67,9 +67,19 @@ type Sensitive struct{}
 
 func (Sensitive) String() string { return "(sensitive)" }
 
+// Kinds of attribute change beyond a plain before/after.
+const (
+	KindChanged   = ""          // a value became another value
+	KindReordered = "reordered" // the same elements in a different order
+	KindAdded     = "added"     // an element appeared in a collection
+	KindRemoved   = "removed"   // an element left a collection
+)
+
 // AttrChange is one changed attribute inside a resource.
 type AttrChange struct {
 	Path          string `json:"path"`
+	Kind          string `json:"kind,omitempty"`
+	Count         int    `json:"count,omitempty"` // elements involved, for reordering
 	Before        any    `json:"before,omitempty"`
 	After         any    `json:"after,omitempty"`
 	AfterUnknown  bool   `json:"after_unknown,omitempty"`

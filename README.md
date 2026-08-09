@@ -232,6 +232,10 @@ collapse:
   cross_unit: true
   cross_unit_mode: shape   # "shape" ignores values, "strict" requires equal ones
   min_units: 2
+
+normalize:
+  empty_as_null: false     # true treats "", [], {} and null as the same value
+  reorder: show            # "ignore" drops collections whose members only moved
 ```
 
 A rule matches a resource when every selector it sets matches (`unit`, `type`,
@@ -253,6 +257,41 @@ paths), `**` matches anything, `?` matches one non-`/` character.
   rendered blocks.
 - **`--explain` shows every hidden attribute and the rule that hid it**, and
   the footer always states how much was hidden.
+
+## Reading collections
+
+Terraform renders sets as arrays, so a set that comes back in a different order
+looks like every index changed at once. `tgsieve` compares arrays by their
+members, not their positions, and reports what actually happened:
+
+```
+input.cidrs  reordered (4 items, same members)
+
+input.cidrs  - "10.0.3.0/24"
+input.cidrs  - "10.0.2.0/24"
+input.cidrs  + "10.0.9.0/24"
+```
+
+Positions are still used when they are the clearer story — an element edited in
+place, or items appended to the end — and only abandoned once the lengths
+differ in the middle, where a positional report would describe changes that
+never happened.
+
+`normalize` decides what counts as no change at all. Both settings are off by
+default, because they are judgement calls about someone else's infrastructure,
+and the footer says how many differences they swallowed.
+
+## Attribute paths
+
+Paths are dotted — `tags.env`, `ports.0` — except where a key contains
+something a path separator would swallow, which is quoted instead:
+
+```
+input.labels["app.kubernetes.io/version"]  "small" → "large"
+```
+
+Rules match against exactly these strings, so `attrs: ["labels.*"]` covers the
+plain keys and `attrs: ["labels[*"]` the quoted ones.
 
 ## Collapsing
 

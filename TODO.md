@@ -41,22 +41,26 @@ view stops being where the time goes.
 
 ## Sieve improvements
 
+Done: arrays are compared by membership rather than position (a reordered set
+is one line, an element leaving the middle no longer shifts every index into a
+false change), a `normalize:` block for empty-versus-null and reorderings, and
+quoted path segments for keys containing dots.
+
+
 - **Rule presets.** `extends: [builtin/aws-tags, builtin/k8s-annotations]` —
   curated starter rule sets people keep rewriting by hand. Must stay opt-in.
-- **Set-aware paths.** Terraform renders sets as arrays, so reordering a set
-  currently looks like N changed indices. Match set members by identity
-  (hash of the element) instead of position.
-- **Empty-vs-null normalization.** `"" → null` and `[] → null` are almost
-  always noise; make it a `normalize:` config block rather than a hardcoded
-  rule, so nobody is surprised.
-- **Escaping in attribute paths.** A map key containing a `.` currently
-  produces an ambiguous path. Quote such segments.
 - **`--fail-on high|medium|low`.** Use the existing `severity:` config to fail
   a pipeline only on dangerous actions.
 - **Per-rule expiry.** `expires: 2026-12-01` on a rule, warn once it lapses, so
   "temporary" suppressions do not become permanent blindness.
 - **Drift section polish.** Separate "drift that the plan will revert" from
   "drift the plan ignores"; the second is what actually bites.
+- **Structural identity for object members.** Membership is compared by exact
+  equality, so an object in a set that had one field edited reads as one
+  removal plus one addition rather than an edit. Matching on an identity field
+  (`id`, `name`, `cidr_block`) would pair them up.
+- **Path globs for quoted segments.** `labels.*` does not match
+  `labels["a.b"]`; the two forms need one syntax rather than two.
 
 ## Runner improvements
 

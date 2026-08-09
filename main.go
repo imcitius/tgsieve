@@ -532,6 +532,10 @@ collapse:
   cross_unit: true        # the same diff in many units -> one block
   cross_unit_mode: shape  # "shape" ignores values, "strict" requires equal values
   min_units: 2
+
+normalize:
+  empty_as_null: false    # true treats "", [], {} and null as the same value
+  reorder: show           # "ignore" drops collections whose members only moved
 `
 
 func cmdInit(args []string) error {

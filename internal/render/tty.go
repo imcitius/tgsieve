@@ -263,9 +263,9 @@ func renderGroup(w io.Writer, p painter, opts Options, g sieve.Group, withAttrs 
 	if width > 40 {
 		width = 40
 	}
-	for _, a := range attrs {
+	for i, a := range attrs {
 		val := ""
-		if g.Varies[a.Path] {
+		if i < len(g.Varies) && g.Varies[i] {
 			val = p.dim(varyLabel(g))
 		} else {
 			val = renderValue(p, a, opts.MaxValue)
@@ -306,6 +306,14 @@ func renderHidden(w io.Writer, p painter, g sieve.Group) {
 }
 
 func renderValue(p painter, a model.AttrChange, max int) string {
+	switch a.Kind {
+	case model.KindReordered:
+		return p.dim(fmt.Sprintf("reordered (%s, same members)", plural(a.Count, "item")))
+	case model.KindAdded:
+		return p.green("+ " + fmtVal(a.After, max))
+	case model.KindRemoved:
+		return p.red("- " + fmtVal(a.Before, max))
+	}
 	after := ""
 	switch {
 	case a.Sensitive:
@@ -404,6 +412,10 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 			slowest.Path, slowest.Duration.Round(time.Millisecond))))
 	}
 
+	if rep.Normalized > 0 {
+		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("normalized: %s treated as no change (normalize rules)",
+			plural(rep.Normalized, "difference"))))
+	}
 	if rep.HiddenAttrs > 0 || rep.HiddenResources > 0 {
 		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("sieved: %d attributes and %d resources hidden by %s%s",
 			rep.HiddenAttrs, rep.HiddenResources, plural(len(rep.RuleStats), "rule"), hint(opts.Explain, " (--explain)"))))

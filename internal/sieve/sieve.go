@@ -23,9 +23,11 @@ type Group struct {
 	Units   []string
 	// ValueVary is true when the members do not all carry the same values.
 	ValueVary bool
-	// Varies marks the individual attribute paths that differ between members,
-	// so the ones that agree can still be shown concretely.
-	Varies map[string]bool
+	// Varies marks, per attribute of Sample, whether the members disagree on
+	// its value. It is positional rather than keyed by path: a collection can
+	// contribute several entries under one path (members added and removed),
+	// and keying by path would collapse them into one another.
+	Varies []bool
 }
 
 func (g Group) Instances() int { return len(g.Members) }
@@ -132,8 +134,11 @@ type Report struct {
 
 	HiddenResources int
 	HiddenAttrs     int
-	RuleStats       []RuleStat
-	Explanations    []Explanation
+	// Normalized counts differences dropped by the normalize rules, kept apart
+	// from rule-hidden attributes because the reason is different.
+	Normalized   int
+	RuleStats    []RuleStat
+	Explanations []Explanation
 
 	// Timings is every unit that reported a duration, slowest first.
 	Timings []UnitTiming
@@ -171,6 +176,10 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 		unitKept := 0
 		for _, res := range u.Resources {
 			if res.Drift && hideDrift {
+				continue
+			}
+			res, gone := normalizeAttrs(res, cfg, rep)
+			if gone {
 				continue
 			}
 			r, dropped := sieveResource(res, cfg, rep, ruleIdx)
@@ -213,6 +222,48 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 	})
 	sort.Strings(rep.UnchangedUnits)
 	return rep
+}
+
+// normalizeAttrs drops differences the configuration says are not
+// differences: empty-versus-null, and reorderings of the same members.
+func normalizeAttrs(res model.Resource, cfg *config.Config, rep *Report) (model.Resource, bool) {
+	emptyAsNull := cfg.Normalize.EmptyAsNull != nil && *cfg.Normalize.EmptyAsNull
+	ignoreReorder := cfg.Normalize.Reorder == "ignore"
+	if !emptyAsNull && !ignoreReorder {
+		return res, false
+	}
+	before := len(res.Attrs)
+	kept := res.Attrs[:0:0]
+	for _, a := range res.Attrs {
+		switch {
+		case ignoreReorder && a.Kind == model.KindReordered:
+		case emptyAsNull && a.Kind == model.KindChanged && !a.AfterUnknown && emptyish(a.Before) && emptyish(a.After):
+		default:
+			kept = append(kept, a)
+			continue
+		}
+		rep.Normalized++
+	}
+	res.Attrs = kept
+	// A resource whose every difference was normalized away has nothing left
+	// to report — unless it is one the safety net protects.
+	dropped := before > 0 && len(kept) == 0 && !cfg.NeverHide.Matches(string(res.Action), res.Type)
+	return res, dropped
+}
+
+// emptyish reports whether a value carries no information: null, "", [] or {}.
+func emptyish(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	}
+	return false
 }
 
 // sieveResource strips ignored attributes and reports whether the whole
@@ -340,7 +391,7 @@ func collapse(res []model.Resource, cfg *config.Config) []Group {
 		}
 		g.Units = keys(unitSet)
 		g.ValueVary = len(shapes) > 1
-		g.Varies = varyingPaths(g.Members)
+		g.Varies = varyingAttrs(g.Members)
 		// Cross-unit collapse only pays off past the configured threshold;
 		// below it, split back into per-unit groups so paths stay concrete.
 		if crossUnit && len(g.Units) > 1 && len(g.Units) < minUnits {
@@ -399,29 +450,26 @@ func groupFailures(units []model.Unit) []FailureGroup {
 	return out
 }
 
-// varyingPaths finds the attribute paths whose value is not identical across
-// every member of a group. Everything else can be printed as a real value
-// instead of a useless "varies".
-func varyingPaths(members []model.Resource) map[string]bool {
+// varyingAttrs reports, for each attribute of the first member, whether the
+// other members disagree about it. Everything else can be printed as a real
+// value instead of a useless "varies".
+func varyingAttrs(members []model.Resource) []bool {
 	if len(members) < 2 {
 		return nil
 	}
-	first := map[string]string{}
-	for _, a := range members[0].Attrs {
-		first[a.Path] = valueKey(a)
-	}
-	varies := map[string]bool{}
+	first := members[0].Attrs
+	varies := make([]bool, len(first))
 	for _, m := range members[1:] {
-		seen := make(map[string]bool, len(m.Attrs))
-		for _, a := range m.Attrs {
-			seen[a.Path] = true
-			if v, ok := first[a.Path]; !ok || v != valueKey(a) {
-				varies[a.Path] = true
+		if len(m.Attrs) != len(first) {
+			// Different shape entirely: nothing can be claimed about values.
+			for i := range varies {
+				varies[i] = true
 			}
+			return varies
 		}
-		for p := range first {
-			if !seen[p] {
-				varies[p] = true
+		for i, a := range m.Attrs {
+			if a.Path != first[i].Path || valueKey(a) != valueKey(first[i]) {
+				varies[i] = true
 			}
 		}
 	}
@@ -431,7 +479,7 @@ func varyingPaths(members []model.Resource) map[string]bool {
 func valueKey(a model.AttrChange) string {
 	// The prior value counts even when the new one is unknown: "was X, will be
 	// computed" and "was Y, will be computed" are not the same story.
-	b, _ := json.Marshal([3]any{a.Before, a.After, a.AfterUnknown})
+	b, _ := json.Marshal([5]any{a.Before, a.After, a.AfterUnknown, a.Kind, a.Count})
 	return string(b)
 }
 

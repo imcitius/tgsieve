@@ -163,3 +163,128 @@ func TestBaseAddressStripsIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestReorderedSetIsOneFactNotMany(t *testing.T) {
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"cidrs": ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24", "10.0.4.0/24"]},
+	  "after":  {"cidrs": ["10.0.4.0/24", "10.0.1.0/24", "10.0.3.0/24", "10.0.2.0/24"]}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 {
+		t.Fatalf("a reordering is one fact, got %d entries: %+v", len(attrs), attrs)
+	}
+	if attrs[0].Kind != model.KindReordered || attrs[0].Path != "cidrs" || attrs[0].Count != 4 {
+		t.Errorf("got %+v", attrs[0])
+	}
+}
+
+func TestSetMembershipReportedAsAddedAndRemoved(t *testing.T) {
+	// One rule removed from the middle: positionally everything after it
+	// shifts, which used to read as four separate changes.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"ports": [22, 80, 443, 8080, 9090]},
+	  "after":  {"ports": [22, 443, 8080, 9090]}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 {
+		t.Fatalf("want a single removal, got %d: %+v", len(attrs), attrs)
+	}
+	if attrs[0].Kind != model.KindRemoved || attrs[0].Before != float64(80) {
+		t.Errorf("got %+v", attrs[0])
+	}
+}
+
+func TestSingleElementEditStaysPositional(t *testing.T) {
+	// Nothing moved, so the index is the clearest way to say it.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"ports": [22, 80, 443]},
+	  "after":  {"ports": [22, 81, 443]}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 {
+		t.Fatalf("want one change, got %d: %+v", len(attrs), attrs)
+	}
+	if attrs[0].Path != "ports.1" || attrs[0].Kind != model.KindChanged {
+		t.Errorf("got %+v", attrs[0])
+	}
+}
+
+func TestMapKeysWithDotsAreQuoted(t *testing.T) {
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"labels": {"app.kubernetes.io/name": "old", "plain": "same"}},
+	  "after":  {"labels": {"app.kubernetes.io/name": "new", "plain": "same"}}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 {
+		t.Fatalf("want one change, got %d: %+v", len(attrs), attrs)
+	}
+	want := `labels["app.kubernetes.io/name"]`
+	if attrs[0].Path != want {
+		t.Errorf("path = %q, want %q", attrs[0].Path, want)
+	}
+	if segs := SplitPath(attrs[0].Path); len(segs) != 2 || segs[1] != "app.kubernetes.io/name" {
+		t.Errorf("path does not split back into its segments: %#v", segs)
+	}
+}
+
+func TestUnknownUnderQuotedKey(t *testing.T) {
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"labels": {"a.b": "old"}},
+	  "after":  {"labels": {"a.b": null}},
+	  "after_unknown": {"labels": {"a.b": true}}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 || !attrs[0].AfterUnknown {
+		t.Fatalf("unknown mask must line up with the quoted path: %+v", attrs)
+	}
+	if attrs[0].Path != `labels["a.b"]` {
+		t.Errorf("path = %q", attrs[0].Path)
+	}
+}
+
+func TestShrinkingListReportsMembershipNotShiftedIndexes(t *testing.T) {
+	// Dropping an element from the middle shifts every later index; reporting
+	// positions would claim changes that never happened, ending in a
+	// "value -> null" for an element that only moved up.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"cidrs": ["10.0.4.0/24", "10.0.1.0/24", "10.0.3.0/24", "10.0.2.0/24"]},
+	  "after":  {"cidrs": ["10.0.4.0/24", "10.0.1.0/24", "10.0.9.0/24"]}
+	}`)
+
+	attrs := Diff(ch)
+	kinds := map[string]int{}
+	for _, a := range attrs {
+		if a.Path != "cidrs" {
+			t.Errorf("membership changes belong to the attribute, not an index: %q", a.Path)
+		}
+		kinds[a.Kind]++
+	}
+	if kinds[model.KindRemoved] != 2 || kinds[model.KindAdded] != 1 {
+		t.Errorf("want 2 removed and 1 added, got %v (%+v)", kinds, attrs)
+	}
+}
+
+func TestAppendingToAListStaysPositional(t *testing.T) {
+	// Nothing shifted, so index 2 is exactly where the new element is.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"zones": ["a", "b"]},
+	  "after":  {"zones": ["a", "b", "c"]}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 || attrs[0].Path != "zones.2" {
+		t.Fatalf("want a single positional addition, got %+v", attrs)
+	}
+}

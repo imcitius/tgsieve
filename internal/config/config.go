@@ -20,6 +20,7 @@ type Config struct {
 	Ignore    []Rule            `yaml:"ignore"`
 	NeverHide NeverHide         `yaml:"never_hide"`
 	Collapse  Collapse          `yaml:"collapse"`
+	Normalize Normalize         `yaml:"normalize"`
 	Severity  map[string]string `yaml:"severity"`
 
 	Sources []string `yaml:"-"` // config files that produced this value
@@ -56,6 +57,18 @@ type NeverHide struct {
 	typeRes []*regexp.Regexp
 }
 
+// Normalize decides which differences are treated as no difference at all.
+// These are judgement calls about terraform's own representation, so they are
+// config rather than hardcoded: a plan that hides something must be able to
+// say which rule hid it.
+type Normalize struct {
+	// EmptyAsNull treats "", [], {} and null as the same value.
+	EmptyAsNull *bool `yaml:"empty_as_null"`
+	// Reorder decides what to do when a collection comes back in a different
+	// order with the same members: "show" (one line) or "ignore".
+	Reorder string `yaml:"reorder"`
+}
+
 type Collapse struct {
 	Instances     *bool  `yaml:"instances"`
 	CrossUnit     *bool  `yaml:"cross_unit"`
@@ -70,6 +83,9 @@ func Default() *Config {
 		Hide:      Hide{UnchangedUnits: &t, Drift: &f, Outputs: &f},
 		NeverHide: NeverHide{Actions: []string{"delete", "replace"}},
 		Collapse:  Collapse{Instances: &t, CrossUnit: &t, CrossUnitMode: "shape", MinUnits: 2},
+		// Nothing is normalized away by default; both of these are opinions
+		// about someone else's infrastructure.
+		Normalize: Normalize{EmptyAsNull: &f, Reorder: "show"},
 	}
 }
 
@@ -205,6 +221,12 @@ func merge(dst, src *Config) {
 	if src.Collapse.MinUnits != 0 {
 		dst.Collapse.MinUnits = src.Collapse.MinUnits
 	}
+	if src.Normalize.EmptyAsNull != nil {
+		dst.Normalize.EmptyAsNull = src.Normalize.EmptyAsNull
+	}
+	if src.Normalize.Reorder != "" {
+		dst.Normalize.Reorder = src.Normalize.Reorder
+	}
 	if len(src.Severity) > 0 {
 		if dst.Severity == nil {
 			dst.Severity = map[string]string{}
@@ -256,6 +278,11 @@ func (c *Config) compile() error {
 	case "", "shape", "strict":
 	default:
 		return fmt.Errorf("collapse.cross_unit_mode: want \"shape\" or \"strict\", got %q", c.Collapse.CrossUnitMode)
+	}
+	switch c.Normalize.Reorder {
+	case "", "show", "ignore":
+	default:
+		return fmt.Errorf("normalize.reorder: want \"show\" or \"ignore\", got %q", c.Normalize.Reorder)
 	}
 	for k, v := range c.Severity {
 		switch v {
