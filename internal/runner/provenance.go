@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/imcitius/tgsieve/internal/model"
 )
 
 // ProvenanceFile sits beside the saved plans and records what they were made
@@ -22,6 +25,10 @@ const ProvenanceFile = ".tgsieve-run.json"
 type Provenance struct {
 	Created time.Time `json:"created"`
 	Command string    `json:"command"`
+	// Source names what the fingerprint was taken from: "git" or "files".
+	Source string `json:"source,omitempty"`
+	// Tool is the tgsieve version that wrote the plans.
+	Tool string `json:"tool,omitempty"`
 	// Commit is the git HEAD the plans were produced at, empty outside a repo.
 	Commit string `json:"commit,omitempty"`
 	// Tree fingerprints uncommitted changes, so an unchanged dirty tree still
@@ -39,8 +46,10 @@ func (p Provenance) SameGeneration(q Provenance) bool {
 // Describe renders the difference for an error message.
 func (p Provenance) Describe() string {
 	switch {
+	case p.Source == "files":
+		return "config fingerprint " + p.Tree
 	case p.Commit == "":
-		return "no git repository"
+		return "an unidentifiable state"
 	case p.Dirty:
 		return shortSHA(p.Commit) + " with uncommitted changes"
 	default:
@@ -56,12 +65,18 @@ func shortSHA(s string) string {
 }
 
 // CurrentProvenance inspects the working tree the run is about to plan from.
-func CurrentProvenance(ctx context.Context, dir, command string) Provenance {
-	p := Provenance{Created: time.Now(), Command: command}
+// Outside a git repository it falls back to hashing the configuration itself,
+// so a directory pulled from a --source URL or unpacked from an archive still
+// has an identity that changes when the code does.
+func CurrentProvenance(ctx context.Context, dir, command, tool string) Provenance {
+	p := Provenance{Created: time.Now(), Command: command, Tool: tool}
 	commit, err := gitOutput(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {
+		p.Source = "files"
+		p.Tree = fingerprintConfigs(dir)
 		return p
 	}
+	p.Source = "git"
 	p.Commit = strings.TrimSpace(commit)
 	status, err := gitOutput(ctx, dir, "status", "--porcelain")
 	if err != nil {
@@ -123,11 +138,123 @@ func generated(path string) bool {
 	return false
 }
 
+// configExts are the files that decide what a plan will contain.
+var configExts = []string{".hcl", ".tf", ".tfvars", ".tftpl", ".json", ".yaml", ".yml"}
+
+// fingerprintConfigs hashes every configuration file under dir. It is the
+// no-git fallback, so it errs towards including too much rather than missing a
+// change: an empty fingerprint would silently make every generation "equal".
+func fingerprintConfigs(dir string) string {
+	h := sha256.New()
+	var files []string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if name == ".git" || generated(name) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if generated(name) {
+			// Plans are .json and would otherwise move the fingerprint every
+			// run — the same trap the git path had with untracked artifacts.
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		for _, want := range configExts {
+			if ext == want {
+				files = append(files, p)
+				break
+			}
+		}
+		return nil
+	})
+	sort.Strings(files)
+	for _, f := range files {
+		rel, err := filepath.Rel(dir, f)
+		if err != nil {
+			rel = f
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(h, "%s\x00%x\x00", filepath.ToSlash(rel), sha256.Sum256(b))
+	}
+	if len(files) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+// TimingsFile remembers how long each unit took, across invocations. After a
+// --resume the current run only knows about the units it re-ran, and a
+// "slowest unit" drawn from that subset would be a lie about the stack.
+const TimingsFile = ".tgsieve-timings.json"
+
+type savedTiming struct {
+	Millis   int64     `json:"ms"`
+	Recorded time.Time `json:"at"`
+}
+
+// SaveTimings merges this run's durations into the record beside the plans.
+func SaveTimings(dir string, run model.Run) error {
+	saved := loadTimings(dir)
+	for _, u := range run.Units {
+		if u.Duration <= 0 {
+			continue
+		}
+		saved[u.Path] = savedTiming{Millis: u.Duration.Milliseconds(), Recorded: time.Now()}
+	}
+	b, err := json.MarshalIndent(saved, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, TimingsFile), append(b, '\n'), 0o644)
+}
+
+// ApplyTimings fills in durations for units this invocation did not run, and
+// marks them as reused so the report can say so.
+func ApplyTimings(dir string, run *model.Run) {
+	saved := loadTimings(dir)
+	if len(saved) == 0 {
+		return
+	}
+	for i := range run.Units {
+		u := &run.Units[i]
+		if u.Duration > 0 {
+			continue
+		}
+		if t, ok := saved[u.Path]; ok {
+			u.Duration = time.Duration(t.Millis) * time.Millisecond
+			u.Reused = true
+		}
+	}
+}
+
+func loadTimings(dir string) map[string]savedTiming {
+	out := map[string]savedTiming{}
+	b, err := os.ReadFile(filepath.Join(dir, TimingsFile))
+	if err != nil {
+		return out
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return map[string]savedTiming{}
+	}
+	return out
 }
 
 // WriteProvenance records the current state next to the plans.

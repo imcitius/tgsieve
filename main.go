@@ -238,7 +238,15 @@ func cmdPlan(args []string) (int, error) {
 		Progress:       prog,
 	}
 
-	now := runner.CurrentProvenance(ctx, cf.dir, "plan")
+	if *keepPlans != "" {
+		release, err := runner.Lock(*keepPlans)
+		if err != nil {
+			return exitToolError, err
+		}
+		defer release()
+	}
+
+	now := runner.CurrentProvenance(ctx, cf.dir, "plan", version)
 
 	reused := 0
 	if *resume {
@@ -262,6 +270,12 @@ func cmdPlan(args []string) (int, error) {
 	res, err := runner.Run(ctx, opts)
 	if err != nil {
 		return exitToolError, err
+	}
+	if *keepPlans != "" {
+		if err := runner.SaveTimings(*keepPlans, res.Run); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not record unit timings: %v\n", err)
+		}
+		runner.ApplyTimings(*keepPlans, &res.Run)
 	}
 	if *keepPlans != "" && !*resume {
 		// Only a fresh run defines the generation; a resume adds to it.
@@ -381,6 +395,7 @@ func renderSaved(dir string, cfg *config.Config, cf commonFlags, detailed bool) 
 	if err != nil {
 		return exitToolError, err
 	}
+	runner.ApplyTimings(dir, &run)
 	rep := sieve.Apply(run, cfg)
 	render.TTY(os.Stdout, rep, cf.renderOpts())
 	if detailed && rep.HasChanges() {
@@ -409,6 +424,7 @@ func cmdShow(args []string) (int, error) {
 	if err != nil {
 		return exitToolError, err
 	}
+	runner.ApplyTimings(dir, &run)
 	if len(run.Units) == 0 {
 		return exitToolError, fmt.Errorf("no tfplan.json found under %s", dir)
 	}

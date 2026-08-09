@@ -102,6 +102,9 @@ type UnitTiming struct {
 	Path     string
 	Duration time.Duration
 	Changes  int
+	// Reused means the duration comes from the run that first planned this
+	// unit, not from this invocation.
+	Reused bool
 }
 
 type RuleStat struct {
@@ -186,7 +189,9 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 			rep.UnitsChanged++
 		}
 		if u.Duration > 0 {
-			rep.Timings = append(rep.Timings, UnitTiming{Path: u.Path, Duration: u.Duration, Changes: unitKept})
+			rep.Timings = append(rep.Timings, UnitTiming{
+				Path: u.Path, Duration: u.Duration, Changes: unitKept, Reused: u.Reused,
+			})
 		}
 	}
 	sort.Slice(rep.Timings, func(i, j int) bool { return rep.Timings[i].Duration > rep.Timings[j].Duration })

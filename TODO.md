@@ -88,17 +88,23 @@ and refuses to mix generations without `--force`; and exit codes separate a
 failed stack (3) from a failed tool (1), surviving changes (2) and an interrupt
 (130).
 
+Also done: provenance outside git (the configuration files are fingerprinted
+when there is no repository), a lock on the `--keep-plans` directory so two
+runs cannot interleave plans (stale locks are taken over, live ones reported),
+and per-unit durations remembered across invocations so `--timings` covers the
+whole stack after a resume, marking reused plans.
+
 Still open:
 
-- **Provenance beyond git.** The generation check is git-only. A stack pulled
-  from a `--source` URL, or a repo-less directory, records nothing and resume
-  falls back to trusting the caller.
-- **Concurrent runs.** Two `tgsieve plan --keep-plans` against the same
-  directory will interleave their plans and overwrite each other's
-  provenance. A lock file would make that a clear error.
-- **Report timings for reused plans.** After `--resume` the timings section
-  only covers units from the last invocation; the reused ones show nothing,
-  which makes "slowest unit" misleading.
+- **Remote module versions.** Provenance covers the configuration in the
+  working directory. A unit whose `terraform { source = "...//module?ref=x" }`
+  moved underneath it looks unchanged to the generation check. Recording the
+  resolved source per unit would close that.
+- **Lock across hosts.** The lock is a pid check, which says nothing about a
+  run on another machine sharing the directory over a network mount.
+- **Timings decay.** Durations are kept forever and never invalidated, so a
+  unit that has since become much faster still reads as the slowest until it
+  runs again.
 
 ## Packaging
 

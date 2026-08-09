@@ -150,6 +150,8 @@ type Unit struct {
 	Error     string        `json:"error,omitempty"`
 	Duration  time.Duration `json:"duration,omitempty"`
 	Skipped   bool          `json:"skipped,omitempty"`
+	// Reused marks a unit whose plan came from an earlier invocation.
+	Reused bool `json:"reused,omitempty"`
 }
 
 type Counts struct {

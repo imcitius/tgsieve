@@ -119,7 +119,21 @@ the plans in ./plans were made at 1cb275fd, the working tree is now at 4a91e0c2
 
 The fingerprint ignores what a run creates for itself — `.terragrunt-cache`,
 `.terraform`, state and plan files — since otherwise no two runs would ever
-agree.
+agree. Outside a git repository (a stack pulled from a `--source` URL, an
+unpacked archive) the fingerprint is taken from the configuration files
+themselves, so the check still holds.
+
+A `--keep-plans` directory is locked while a run writes to it, so two runs
+cannot interleave their plans into one incoherent report. A lock left by a
+crashed run is taken over automatically; a live one is reported:
+
+```
+./plans is in use by another tgsieve run (pid 51216, started 11:40PM)
+```
+
+Unit durations are remembered per directory, so after a resume the timings
+cover the whole stack rather than only the units that just ran — reused ones
+are labelled as such.
 
 While the run is in flight you get one status line and nothing else, plus any
 unit's failure the moment it happens rather than at the end:

@@ -209,3 +209,94 @@ func TestProvenanceGenerationComparison(t *testing.T) {
 		t.Error("a different commit is a new generation")
 	}
 }
+
+func TestFingerprintConfigsTracksContentNotNoise(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("root.hcl", "locals { a = 1 }")
+	write("envs/prod/terragrunt.hcl", "inputs = { size = \"small\" }")
+
+	base := fingerprintConfigs(dir)
+	if base == "" {
+		t.Fatal("a directory with config files must fingerprint to something")
+	}
+
+	// Cache and state churn must not move the fingerprint.
+	write("envs/prod/.terragrunt-cache/abc/main.tf", "resource \"null_resource\" \"x\" {}")
+	write("state/terraform.tfstate", `{"version":4}`)
+	if got := fingerprintConfigs(dir); got != base {
+		t.Errorf("generated files changed the fingerprint: %s -> %s", base, got)
+	}
+
+	// Neither may plans saved inside the working directory.
+	write("plans/envs/prod/tfplan.json", `{"format_version":"1.2"}`)
+	if got := fingerprintConfigs(dir); got != base {
+		t.Errorf("saved plans changed the fingerprint: %s -> %s", base, got)
+	}
+
+	// A real edit must.
+	write("envs/prod/terragrunt.hcl", "inputs = { size = \"large\" }")
+	if got := fingerprintConfigs(dir); got == base {
+		t.Error("editing a unit did not change the fingerprint")
+	}
+}
+
+func TestFingerprintEmptyDirIsEmpty(t *testing.T) {
+	if got := fingerprintConfigs(t.TempDir()); got != "" {
+		t.Errorf("nothing to fingerprint should be empty, got %q", got)
+	}
+}
+
+func TestLockIsExclusiveAndReleases(t *testing.T) {
+	dir := t.TempDir()
+
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	if _, err := Lock(dir); err == nil {
+		t.Fatal("a second run must not be able to claim the same directory")
+	}
+
+	release()
+	release2, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+	release2()
+}
+
+func TestLockTakesOverFromDeadProcess(t *testing.T) {
+	dir := t.TempDir()
+	// PID 0 is never a live user process, so this stands in for a crashed run.
+	stale := `{"pid":0,"started":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, LockFile), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("a crashed run should not need manual cleanup: %v", err)
+	}
+	release()
+}
+
+func TestLockIgnoresGarbage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, LockFile), []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("an unreadable lock should be replaced, not fatal: %v", err)
+	}
+	release()
+}

@@ -182,6 +182,9 @@ func timings(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 		if t.Changes > 0 {
 			note = p.dim(plural(t.Changes, "change"))
 		}
+		if t.Reused {
+			note += p.dim("  (reused plan)")
+		}
 		fmt.Fprintf(w, "  %-*s  %8s  %s\n", width, t.Path, t.Duration.Round(time.Millisecond), note)
 	}
 }
