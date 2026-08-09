@@ -14,6 +14,12 @@ plans made against code that has since moved. `--all` stays opt-in, destroys
 and replacements need their own confirmation, and a run without a terminal
 refuses unless `--auto-approve` says otherwise.
 
+Two bugs found in v0.4.0 and fixed in v0.4.1: terragrunt asks its own "are you
+sure" for a stack apply, and the child process has no terminal, so it read EOF
+and aborted — while the outcome block still announced APPLIED. Runs tgsieve
+drives now pass --non-interactive (tgsieve does the asking itself), and the
+outcome refuses to describe a failed run as applied.
+
 Still open there:
 
 - **No per-resource progress.** The status line counts units, so a single unit

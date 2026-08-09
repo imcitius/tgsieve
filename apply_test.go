@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/imcitius/tgsieve/internal/model"
+	"github.com/imcitius/tgsieve/internal/render"
+	"github.com/imcitius/tgsieve/internal/runner"
 	"github.com/imcitius/tgsieve/internal/sieve"
 )
 
@@ -72,5 +74,64 @@ func TestAutoApproveSaysWhatItIsDestroying(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "3 resources") {
 		t.Errorf("it should still state the damage: %q", out.String())
+	}
+}
+
+func TestOutcomeNeverClaimsAnAppliedRunThatFailed(t *testing.T) {
+	planned := report(model.Counts{Update: 5})
+	planned.UnitsChanged = 5
+
+	cases := []struct {
+		name string
+		res  runner.Result
+		out  sieve.Report
+	}{
+		{"terragrunt exited non-zero", runner.Result{ExitCode: 1, Errors: []string{"EOF"}}, sieve.Report{}},
+		{"a unit failed", runner.Result{}, sieve.Report{ErroredUnits: []model.Unit{{Path: "a", Errored: true}}}},
+		{"interrupted", runner.Result{Interrupted: true}, sieve.Report{}},
+	}
+	for _, c := range cases {
+		res := c.res
+		out := c.out
+		if !applyFailed(&out, &res) {
+			t.Errorf("%s: should count as a failed apply", c.name)
+		}
+		var buf bytes.Buffer
+		renderOutcome(&buf, planned, &out, &res, render.Options{})
+		if strings.Contains(buf.String(), "APPLIED") && !strings.Contains(buf.String(), "APPLY") {
+			t.Errorf("%s: reported success:\n%s", c.name, buf.String())
+		}
+		if !strings.Contains(buf.String(), "what was planned, not what landed") {
+			t.Errorf("%s: does not warn that the report is not the outcome:\n%s", c.name, buf.String())
+		}
+	}
+}
+
+func TestOutcomeReportsSuccessPlainly(t *testing.T) {
+	planned := report(model.Counts{Update: 4, Delete: 1})
+	planned.UnitsChanged = 3
+	res := runner.Result{}
+	out := sieve.Report{}
+
+	var buf bytes.Buffer
+	renderOutcome(&buf, planned, &out, &res, render.Options{})
+	got := buf.String()
+	if !strings.Contains(got, "APPLIED") {
+		t.Fatalf("a clean apply should say so:\n%s", got)
+	}
+	if !strings.Contains(got, "1 destroyed") {
+		t.Errorf("destroys deserve their own line:\n%s", got)
+	}
+}
+
+func TestErrorSurfacesWhenNoUnitWasBlamed(t *testing.T) {
+	// terragrunt can fail before any unit runs — its own prompt reading EOF,
+	// for instance. The reason still has to reach the reader.
+	res := runner.Result{ExitCode: 1, Errors: []string{"EOF"}}
+	out := sieve.Report{}
+	var buf bytes.Buffer
+	renderOutcome(&buf, report(model.Counts{Update: 1}), &out, &res, render.Options{})
+	if !strings.Contains(buf.String(), "EOF") {
+		t.Errorf("the error text is missing:\n%s", buf.String())
 	}
 }

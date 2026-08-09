@@ -10,10 +10,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/imcitius/tgsieve/internal/render"
 	"github.com/imcitius/tgsieve/internal/runner"
 	"github.com/imcitius/tgsieve/internal/sieve"
+	"github.com/imcitius/tgsieve/internal/textutil"
 )
 
 // cmdApply plans, shows the sieved report, asks, and then applies the plan
@@ -208,31 +210,55 @@ func approve(in io.Reader, out io.Writer, rep *sieve.Report, autoApprove, intera
 	return strings.TrimSpace(strings.ToLower(answer)) == "destroy", nil
 }
 
+// applyFailed reports whether the apply ran to completion. Anything short of
+// that must not be described as applied: a report claiming changes that never
+// happened is worse than no report.
+func applyFailed(outcome *sieve.Report, res *runner.Result) bool {
+	return res.Interrupted || res.ExitCode != 0 || len(outcome.ErroredUnits) > 0
+}
+
 // renderOutcome reports what the apply did with the plans that were shown.
 func renderOutcome(w io.Writer, planned, outcome *sieve.Report, res *runner.Result, opts render.Options) {
 	p := paletteFor(opts.Color)
-	fmt.Fprintf(w, "\n%s\n", p("1", "APPLIED"))
+	took := res.Duration.Round(100 * time.Millisecond)
 
-	failed := len(outcome.ErroredUnits)
-	applied := planned.UnitsChanged - failed
-	if applied < 0 {
-		applied = 0
-	}
-	fmt.Fprintf(w, "  %s in %s\n",
-		p("2", fmt.Sprintf("%s across %s", plural(planned.Kept.Total(), "change"), plural(applied, "unit"))),
-		res.Duration.Round(100000000))
+	if applyFailed(outcome, res) {
+		headline := "APPLY FAILED"
+		if res.Interrupted {
+			headline = "APPLY INTERRUPTED"
+		}
+		fmt.Fprintf(w, "\n%s\n", p("1;31", headline))
+		fmt.Fprintf(w, "  %s\n", p("2", fmt.Sprintf(
+			"stopped after %s — the report above is what was planned, not what landed", took)))
 
-	if failed > 0 {
-		fmt.Fprintf(w, "  %s\n", p("31", plural(failed, "unit")+" failed — the report above describes what was planned, not what survived"))
-		for _, g := range outcome.Failures {
-			fmt.Fprintf(w, "    %s %s\n", p("31", "✗"), strings.Join(g.Units, ", "))
-			for _, line := range g.Detail {
-				fmt.Fprintf(w, "        %s\n", p("2", line))
+		switch {
+		case len(outcome.Failures) > 0:
+			for _, g := range outcome.Failures {
+				fmt.Fprintf(w, "  %s %s\n", p("31", "✗"), strings.Join(g.Units, ", "))
+				for _, line := range g.Detail {
+					fmt.Fprintf(w, "      %s\n", p("2", line))
+				}
+			}
+		case len(res.Errors) > 0:
+			for _, e := range res.Errors {
+				for _, line := range textutil.CleanError(e, 6) {
+					fmt.Fprintf(w, "  %s %s\n", p("31", "✗"), line)
+				}
 			}
 		}
+		if res.TFPath != "" {
+			fmt.Fprintf(w, "  %s\n", p("2", "terragrunt ran "+res.TFPath))
+		}
+		fmt.Fprintf(w, "  %s\n", p("2", "run tgsieve plan to see where things actually stand"))
+		return
 	}
-	if counts := planned.Kept; counts.Delete+counts.Replace > 0 && failed == 0 {
-		fmt.Fprintf(w, "  %s\n", p("2", fmt.Sprintf("%d destroyed, %d replaced", counts.Delete, counts.Replace)))
+
+	fmt.Fprintf(w, "\n%s\n", p("1", "APPLIED"))
+	fmt.Fprintf(w, "  %s in %s\n",
+		p("2", fmt.Sprintf("%s across %s", plural(planned.Kept.Total(), "change"),
+			plural(planned.UnitsChanged, "unit"))), took)
+	if c := planned.Kept; c.Delete+c.Replace > 0 {
+		fmt.Fprintf(w, "  %s\n", p("2", fmt.Sprintf("%d destroyed, %d replaced", c.Delete, c.Replace)))
 	}
 }
 

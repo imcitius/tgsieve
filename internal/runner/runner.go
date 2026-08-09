@@ -202,6 +202,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 // --json-out-dir for us.
 func runStack(ctx context.Context, opts Options, planDir, reportFile string, res *Result) error {
 	args := []string{"run", "--all",
+		// tgsieve does the asking — with its own destroy confirmation — and the
+		// child has no terminal to ask through, so terragrunt's own prompt
+		// would only ever read EOF and abort.
+		"--non-interactive",
 		"--report-file", reportFile,
 		"--report-format", "json",
 		"--summary-disable",
@@ -243,6 +247,7 @@ func runUnit(ctx context.Context, opts Options, planDir, reportFile string, res 
 	}
 
 	args := []string{"run",
+		"--non-interactive",
 		"--report-file", reportFile,
 		"--report-format", "json",
 		"--summary-disable",
@@ -262,7 +267,7 @@ func runUnit(ctx context.Context, opts Options, planDir, reportFile string, res 
 		return nil // the unit failed; the error lines already tell the story
 	}
 
-	show := []string{"run", "--log-disable", "--tf-forward-stdout"}
+	show := []string{"run", "--log-disable", "--tf-forward-stdout", "--non-interactive"}
 	show = append(show, opts.TerragruntArgs...)
 	show = append(show, "--", "show", "-json", planFile)
 	out, err := output(ctx, opts, show)
@@ -296,6 +301,7 @@ func applyUnit(ctx context.Context, opts Options, reportFile string, res *Result
 		return fmt.Errorf("no saved plan for this unit at %s", planFile)
 	}
 	args := []string{"run",
+		"--non-interactive",
 		"--report-file", reportFile,
 		"--report-format", "json",
 		"--summary-disable",
