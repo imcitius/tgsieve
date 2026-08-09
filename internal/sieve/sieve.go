@@ -146,6 +146,10 @@ type Report struct {
 	Wall time.Duration
 	// NoRefresh records that the plan was produced without refreshing state.
 	NoRefresh bool
+	// Severity is the highest severity among the surviving changes, and
+	// SeverityCounts how many changes sit at each level.
+	Severity       string
+	SeverityCounts map[string]int
 }
 
 func (r Report) HasChanges() bool { return r.Kept.Total() > 0 }
@@ -209,6 +213,7 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 	}
 	sort.Slice(rep.Timings, func(i, j int) bool { return rep.Timings[i].Duration > rep.Timings[j].Duration })
 
+	rep.rankSeverity(cfg)
 	rep.Failures = groupFailures(rep.ErroredUnits)
 	rep.Groups = collapse(kept, cfg)
 	for _, s := range ruleIdx {
@@ -222,6 +227,38 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 	})
 	sort.Strings(rep.UnchangedUnits)
 	return rep
+}
+
+// rankSeverity records how serious the surviving changes are, so a pipeline
+// can fail on a replacement without failing on a new log group.
+func (r *Report) rankSeverity(cfg *config.Config) {
+	r.SeverityCounts = map[string]int{}
+	add := func(action string, n int) {
+		if n == 0 {
+			return
+		}
+		level := cfg.SeverityOf(action)
+		r.SeverityCounts[level] += n
+		if config.SeverityRank(level) > config.SeverityRank(r.Severity) {
+			r.Severity = level
+		}
+	}
+	add("delete", r.Kept.Delete)
+	add("replace", r.Kept.Replace)
+	add("update", r.Kept.Update)
+	add("create", r.Kept.Create)
+	add("drift", r.Kept.Drift)
+}
+
+// AtLeast reports whether anything survived at or above a severity level.
+func (r Report) AtLeast(level string) bool {
+	want := config.SeverityRank(level)
+	for got, n := range r.SeverityCounts {
+		if n > 0 && config.SeverityRank(got) >= want {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeAttrs drops differences the configuration says are not

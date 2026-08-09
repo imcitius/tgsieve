@@ -43,14 +43,12 @@ view stops being where the time goes.
 
 Done: arrays are compared by membership rather than position (a reordered set
 is one line, an element leaving the middle no longer shifts every index into a
-false change), a `normalize:` block for empty-versus-null and reorderings, and
-quoted path segments for keys containing dots.
+false change), a `normalize:` block for empty-versus-null and reorderings,
+quoted path segments for keys containing dots (and attribute globs that cover
+both spellings), built-in rule presets via `extends`, and `--fail-on` backed by
+per-action severity.
 
 
-- **Rule presets.** `extends: [builtin/aws-tags, builtin/k8s-annotations]` —
-  curated starter rule sets people keep rewriting by hand. Must stay opt-in.
-- **`--fail-on high|medium|low`.** Use the existing `severity:` config to fail
-  a pipeline only on dangerous actions.
 - **Per-rule expiry.** `expires: 2026-12-01` on a rule, warn once it lapses, so
   "temporary" suppressions do not become permanent blindness.
 - **Drift section polish.** Separate "drift that the plan will revert" from
@@ -59,8 +57,12 @@ quoted path segments for keys containing dots.
   equality, so an object in a set that had one field edited reads as one
   removal plus one addition rather than an edit. Matching on an identity field
   (`id`, `name`, `cidr_block`) would pair them up.
-- **Path globs for quoted segments.** `labels.*` does not match
-  `labels["a.b"]`; the two forms need one syntax rather than two.
+- **Preset drift.** Presets are a fixed list compiled into the binary. A
+  project that wants one changed has to fork it; `extends` accepting a path or
+  URL would help, but turns "what is hidden" into something fetched at runtime.
+- **Severity for attributes, not just actions.** `--fail-on` ranks by action,
+  so an update to a security group rule and an update to a description are
+  equally medium. Ranking by attribute would need a rule syntax of its own.
 
 ## Runner improvements
 

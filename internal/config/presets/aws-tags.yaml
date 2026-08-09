@@ -1,0 +1,25 @@
+# Tags that change on every deploy without describing infrastructure.
+# Deliberately narrow: only tags whose whole purpose is to record when or by
+# what a resource was last touched. Anything that could carry meaning — owner,
+# environment, cost centre — is left alone.
+ignore:
+  - name: deploy timestamp tags
+    attrs:
+      - "tags.LastModified"
+      - "tags.LastUpdated"
+      - "tags.last_modified"
+      - "tags.last_updated"
+      - "tags.deployed_at"
+      - "tags.DeployedAt"
+      - "tags.timestamp"
+      - "tags.Timestamp"
+  - name: build provenance tags
+    attrs:
+      - "tags.git_commit"
+      - "tags.GitCommit"
+      - "tags.git_sha"
+      - "tags.GitSha"
+      - "tags.build_id"
+      - "tags.BuildId"
+      - "tags.build_number"
+      - "tags.BuildNumber"

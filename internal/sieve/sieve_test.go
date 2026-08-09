@@ -285,3 +285,60 @@ func TestNormalizeDoesNotTouchUnknownValues(t *testing.T) {
 		t.Fatalf("an unknown value must survive normalization: %+v", rep.Groups)
 	}
 }
+
+func TestSeverityRankingAndFailOn(t *testing.T) {
+	run := model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+		res("a", "aws_x.new", "aws_x", "new", model.ActionCreate, attr("size", nil, "s")),
+		res("a", "aws_x.edit", "aws_x", "edit", model.ActionUpdate, attr("size", "s", "l")),
+	}}}}
+
+	rep := Apply(run, config.Default())
+	if rep.Severity != "medium" {
+		t.Errorf("an update is the worst thing here: %q", rep.Severity)
+	}
+	if !rep.AtLeast("low") || !rep.AtLeast("medium") {
+		t.Error("medium changes satisfy both low and medium thresholds")
+	}
+	if rep.AtLeast("high") {
+		t.Error("nothing here is high")
+	}
+
+	// A destroy raises it.
+	run.Units[0].Resources = append(run.Units[0].Resources,
+		res("a", "aws_x.gone", "aws_x", "gone", model.ActionDelete, attr("size", "s", nil)))
+	if rep := Apply(run, config.Default()); !rep.AtLeast("high") || rep.Severity != "high" {
+		t.Errorf("a destroy is high: %q %v", rep.Severity, rep.SeverityCounts)
+	}
+}
+
+func TestSeverityIsConfigurable(t *testing.T) {
+	// A team that treats every creation as worth stopping for.
+	cfg := config.Default()
+	cfg.Severity = map[string]string{"create": "high"}
+	run := model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+		res("a", "aws_x.new", "aws_x", "new", model.ActionCreate, attr("size", nil, "s")),
+	}}}}
+
+	rep := Apply(run, cfg)
+	if !rep.AtLeast("high") {
+		t.Errorf("severity override ignored: %q %v", rep.Severity, rep.SeverityCounts)
+	}
+}
+
+func TestSeverityOnlyCountsSurvivingChanges(t *testing.T) {
+	// A destroy hidden by rules would still be high — but never_hide protects
+	// destroys, so use an update the rules do remove.
+	cfg := config.Default()
+	cfg.Ignore = []config.Rule{{Name: "all", Attrs: []string{"*"}}}
+	if err := config.Compile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	run := model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+		res("a", "aws_x.edit", "aws_x", "edit", model.ActionUpdate, attr("size", "s", "l")),
+	}}}}
+
+	rep := Apply(run, cfg)
+	if rep.AtLeast("low") {
+		t.Errorf("a change removed by the sieve must not fail a pipeline: %v", rep.SeverityCounts)
+	}
+}

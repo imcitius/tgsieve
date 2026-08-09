@@ -184,6 +184,17 @@ FAILED (5)
       Error: no valid credential sources found
 ```
 
+`--fail-on high` exits 2 only when something at that severity survived, so a
+pipeline can stop for a replacement without stopping for a new log group.
+Actions rank as `delete`/`replace` high, `update`/`drift` medium, `create` low,
+and the `severity:` block overrides that per action. The summary always states
+the spread:
+
+```
+SUMMARY  ±5 replace  ~10 update
+  severity: 5 high, 10 medium
+```
+
 Exit codes distinguish the three ways a run can be unhappy, so CI can react to
 each differently:
 
@@ -191,7 +202,7 @@ each differently:
 | --- | --- |
 | `0` | ran fine |
 | `1` | tgsieve itself failed — bad flags, terragrunt would not start, unreadable plans |
-| `2` | changes survived the sieve (only with `--detailed-exitcode`) |
+| `2` | changes survived the sieve (`--detailed-exitcode`, or `--fail-on` was met) |
 | `3` | one or more units failed to plan |
 | `130` | interrupted with Ctrl-C |
 
@@ -207,6 +218,8 @@ merged, nearer files winning.
 
 ```yaml
 version: 1
+
+extends: [builtin/aws-tags]   # curated rule sets — see "tgsieve presets"
 
 hide:
   unchanged_units: true   # units with nothing left to say become a count
@@ -242,8 +255,26 @@ A rule matches a resource when every selector it sets matches (`unit`, `type`,
 `address`, `actions`), and then removes the attributes matching `attrs`.
 **`attrs` is required** — use `["*"]` to drop the whole resource.
 
-Globs: `*` matches anything except `/` (so it crosses `.` inside attribute
-paths), `**` matches anything, `?` matches one non-`/` character.
+Globs over unit paths, types and addresses: `*` matches anything except `/`,
+`**` matches anything, `?` matches one non-`/` character. In **attribute**
+patterns `/` carries no structure — it lives inside keys like
+`app.kubernetes.io/name` — so a single `*` matches through it, and a pattern
+written the ordinary way covers the quoted form as well: `labels.*` matches
+both `labels.plain` and `labels["app.kubernetes.io/name"]`.
+
+### Presets
+
+`tgsieve presets` lists the rule sets shipped with the tool, and
+`tgsieve presets builtin/aws-tags` shows exactly what one of them hides. They
+are opt-in through `extends`, and expand before your own rules so a
+hand-written rule reads as the last word. Every preset rule keeps its origin in
+its name, so `--explain` says where a suppression came from.
+
+| preset | hides |
+| --- | --- |
+| `builtin/aws-tags` | tags that only record when or by what a resource was last deployed |
+| `builtin/k8s-annotations` | bookkeeping the Kubernetes API server writes back on its own |
+| `builtin/computed-hashes` | the six digests that restate a `content` change already reported |
 
 ### Why you can trust it
 

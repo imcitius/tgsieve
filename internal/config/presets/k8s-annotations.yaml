@@ -1,0 +1,10 @@
+# Kubernetes bookkeeping the API server writes back on its own.
+ignore:
+  - name: kubectl last-applied-configuration
+    attrs:
+      - 'metadata.*.annotations["kubectl.kubernetes.io/last-applied-configuration"]'
+  - name: rollout bookkeeping
+    attrs:
+      - 'metadata.*.annotations["deployment.kubernetes.io/revision"]'
+      - "metadata.*.resource_version"
+      - "metadata.*.generation"

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/imcitius/tgsieve/internal/attrpath"
 )
 
 // FileNames are searched for, nearest-last, walking up from the working dir.
@@ -16,6 +18,7 @@ var FileNames = []string{".tgsieve.yaml", ".tgsieve.yml"}
 
 type Config struct {
 	Version   int               `yaml:"version"`
+	Extends   []string          `yaml:"extends"`
 	Hide      Hide              `yaml:"hide"`
 	Ignore    []Rule            `yaml:"ignore"`
 	NeverHide NeverHide         `yaml:"never_hide"`
@@ -50,11 +53,25 @@ type Rule struct {
 }
 
 // NeverHide is the safety net: matching resources bypass every ignore rule.
+//
+// Actions is a pointer so that an explicit empty list can turn the net off.
+// Ignoring what someone wrote because it was empty would be the worst of both
+// worlds: the setting looks applied and is not.
 type NeverHide struct {
-	Actions []string `yaml:"actions"`
-	Types   []string `yaml:"types"`
+	Actions *[]string `yaml:"actions"`
+	Types   []string  `yaml:"types"`
 
 	typeRes []*regexp.Regexp
+}
+
+// List returns the configured actions, for display.
+func (n NeverHide) List() []string { return n.actions() }
+
+func (n NeverHide) actions() []string {
+	if n.Actions == nil {
+		return nil
+	}
+	return *n.Actions
 }
 
 // Normalize decides which differences are treated as no difference at all.
@@ -76,12 +93,47 @@ type Collapse struct {
 	MinUnits      int    `yaml:"min_units"`
 }
 
+// DefaultSeverity ranks the actions when nothing is configured. Anything that
+// removes or recreates infrastructure is high; changing one in place is
+// medium; adding something new is low.
+var DefaultSeverity = map[string]string{
+	"delete":  "high",
+	"replace": "high",
+	"update":  "medium",
+	"drift":   "medium",
+	"create":  "low",
+}
+
+// SeverityOf ranks one action, honouring any override in the config.
+func (c *Config) SeverityOf(action string) string {
+	if v, ok := c.Severity[action]; ok {
+		return v
+	}
+	if v, ok := DefaultSeverity[action]; ok {
+		return v
+	}
+	return "low"
+}
+
+// SeverityRank orders the levels; an unknown level sorts lowest.
+func SeverityRank(level string) int {
+	switch level {
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	}
+	return 0
+}
+
 func Default() *Config {
 	t, f := true, false
 	return &Config{
 		Version:   1,
 		Hide:      Hide{UnchangedUnits: &t, Drift: &f, Outputs: &f},
-		NeverHide: NeverHide{Actions: []string{"delete", "replace"}},
+		NeverHide: NeverHide{Actions: &[]string{"delete", "replace"}},
 		Collapse:  Collapse{Instances: &t, CrossUnit: &t, CrossUnitMode: "shape", MinUnits: 2},
 		// Nothing is normalized away by default; both of these are opinions
 		// about someone else's infrastructure.
@@ -178,12 +230,18 @@ func parseFile(path string) (*Config, error) {
 		return nil, err
 	}
 	var c Config
-	dec := yaml.NewDecoder(strings.NewReader(string(b)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&c); err != nil {
+	if err := yamlStrict(b, &c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// yamlStrict decodes and rejects unknown fields, so a typo in a config is an
+// error rather than a silently ignored setting.
+func yamlStrict(b []byte, out *Config) error {
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	dec.KnownFields(true)
+	return dec.Decode(out)
 }
 
 func merge(dst, src *Config) {
@@ -202,8 +260,9 @@ func merge(dst, src *Config) {
 	if src.Hide.Outputs != nil {
 		dst.Hide.Outputs = src.Hide.Outputs
 	}
+	dst.Extends = append(dst.Extends, src.Extends...)
 	dst.Ignore = append(dst.Ignore, src.Ignore...)
-	if len(src.NeverHide.Actions) > 0 {
+	if src.NeverHide.Actions != nil {
 		dst.NeverHide.Actions = src.NeverHide.Actions
 	}
 	if len(src.NeverHide.Types) > 0 {
@@ -242,6 +301,25 @@ func merge(dst, src *Config) {
 func Compile(c *Config) error { return c.compile() }
 
 func (c *Config) compile() error {
+	// Presets come first so a rule written by hand can be read as the last
+	// word, and so --explain attributes each suppression to its source.
+	if len(c.Extends) > 0 {
+		var expanded []Rule
+		seen := map[string]bool{}
+		for _, name := range c.Extends {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			rules, err := LoadPreset(name)
+			if err != nil {
+				return err
+			}
+			expanded = append(expanded, rules...)
+		}
+		c.Ignore = append(expanded, c.Ignore...)
+		c.Extends = nil // expanded once; compile() may run again
+	}
 	for i := range c.Ignore {
 		r := &c.Ignore[i]
 		if len(r.Attrs) == 0 {
@@ -259,7 +337,7 @@ func (c *Config) compile() error {
 		}
 		r.attrRes = r.attrRes[:0]
 		for _, a := range r.Attrs {
-			re, err := compileGlob(a)
+			re, err := compileAttrGlob(a)
 			if err != nil {
 				return fmt.Errorf("ignore rule %q attr %q: %w", r.Label(i), a, err)
 			}
@@ -340,9 +418,14 @@ func (r Rule) MatchesResource(unit, typ, address string, action string) bool {
 }
 
 // MatchesAttr reports whether an attribute path is covered by the rule.
+//
+// A path whose key had to be quoted is also matched in its plain dotted form,
+// so a rule written as labels.* covers labels["app.kubernetes.io/name"] too —
+// one syntax for the reader, both spellings underneath.
 func (r Rule) MatchesAttr(path string) bool {
+	dotted := attrpath.Dotted(path)
 	for _, re := range r.attrRes {
-		if re.MatchString(path) {
+		if re.MatchString(path) || (dotted != path && re.MatchString(dotted)) {
 			return true
 		}
 	}
@@ -350,7 +433,7 @@ func (r Rule) MatchesAttr(path string) bool {
 }
 
 func (n NeverHide) Matches(action, typ string) bool {
-	for _, a := range n.Actions {
+	for _, a := range n.actions() {
 		if a == action {
 			return true
 		}
@@ -363,14 +446,26 @@ func (n NeverHide) Matches(action, typ string) bool {
 	return false
 }
 
-// compileGlob turns a glob into an anchored regexp.
+// compileGlob turns a glob over unit paths, types and addresses into an
+// anchored regexp:
 //
 //   - matches anything except a path separator '/'  (so it crosses '.')
 //     ** matches anything at all
 //     ?  matches one character that is not '/'
-func compileGlob(g string) (*regexp.Regexp, error) {
+func compileGlob(g string) (*regexp.Regexp, error) { return buildGlob(g, true) }
+
+// compileAttrGlob is the same for attribute patterns, where '/' carries no
+// structure — it appears inside keys such as "app.kubernetes.io/name" — so a
+// single '*' matches through it.
+func compileAttrGlob(g string) (*regexp.Regexp, error) { return buildGlob(g, false) }
+
+func buildGlob(g string, slashIsSeparator bool) (*regexp.Regexp, error) {
 	if g == "" {
 		return nil, nil
+	}
+	star, one := ".*", "."
+	if slashIsSeparator {
+		star, one = "[^/]*", "[^/]"
 	}
 	var b strings.Builder
 	b.WriteString("^")
@@ -381,10 +476,10 @@ func compileGlob(g string) (*regexp.Regexp, error) {
 				b.WriteString(".*")
 				i++
 			} else {
-				b.WriteString("[^/]*")
+				b.WriteString(star)
 			}
 		case '?':
-			b.WriteString("[^/]")
+			b.WriteString(one)
 		default:
 			b.WriteString(regexp.QuoteMeta(string(g[i])))
 		}

@@ -59,6 +59,7 @@ Usage:
   tgsieve plan [flags] [-- <tofu/terraform args>]   run a plan and show real changes
   tgsieve show <plan-dir> [flags]                   re-render plans saved earlier
   tgsieve rules [flags]                             print the effective sieve config
+  tgsieve presets [name]                            list the built-in rule sets, or show one
   tgsieve init                                      write a starter .tgsieve.yaml at the project root
   tgsieve version
 
@@ -92,6 +93,8 @@ func main() {
 		code, err = cmdShow(os.Args[2:])
 	case "rules":
 		err = cmdRules(os.Args[2:])
+	case "presets":
+		err = cmdPresets(os.Args[2:])
 	case "init":
 		err = cmdInit(os.Args[2:])
 	case "version", "--version", "-v":
@@ -180,6 +183,7 @@ func cmdPlan(args []string) (int, error) {
 	tfPath := fs.String("tf-path", "", "tofu/terraform binary terragrunt should call")
 	binary := fs.String("binary", "terragrunt", "terragrunt binary")
 	detailed := fs.Bool("detailed-exitcode", false, "exit 2 when changes survive the sieve, 0 when none")
+	failOn := fs.String("fail-on", "", "exit 2 when a surviving change is this severe or worse: low|medium|high")
 	tgArgs := fs.String("tg-args", "", "extra terragrunt flags, space separated")
 	var filters stringList
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
@@ -209,6 +213,9 @@ func cmdPlan(args []string) (int, error) {
 	}
 	if *parallelism > 0 && !*all {
 		return exitToolError, fmt.Errorf("--parallelism paces a stack run: add --all")
+	}
+	if *failOn != "" && config.SeverityRank(*failOn) == 0 {
+		return exitToolError, fmt.Errorf("--fail-on: want low, medium or high, got %q", *failOn)
 	}
 	if *resume {
 		if *keepPlans == "" {
@@ -330,6 +337,9 @@ func cmdPlan(args []string) (int, error) {
 		// terragrunt failed before any unit produced a plan: nothing ran, so
 		// this is a tooling or configuration problem, not a stack failure.
 		return exitToolError, nil
+	}
+	if *failOn != "" && rep.AtLeast(*failOn) {
+		return exitChanges, nil
 	}
 	if *detailed && rep.HasChanges() {
 		return exitChanges, nil
@@ -493,11 +503,39 @@ func cmdRules(args []string) error {
 	}
 	fmt.Printf("\ncollapse: instances=%v cross_unit=%v mode=%s min_units=%d\n",
 		deref(cfg.Collapse.Instances), deref(cfg.Collapse.CrossUnit), orDefault(cfg.Collapse.CrossUnitMode, "shape"), cfg.Collapse.MinUnits)
-	fmt.Printf("never_hide: actions=%v types=%v\n", cfg.NeverHide.Actions, cfg.NeverHide.Types)
+	fmt.Printf("never_hide: actions=%v types=%v\n", cfg.NeverHide.List(), cfg.NeverHide.Types)
 	fmt.Printf("\nignore rules (%d):\n", len(cfg.Ignore))
 	for i, r := range cfg.Ignore {
 		fmt.Printf("  %s\n", r.Label(i))
 	}
+	return nil
+}
+
+func cmdPresets(args []string) error {
+	if len(args) > 0 {
+		rules, err := config.PresetRules(args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s (%s)\n\n", args[0], plural(len(rules), "rule"))
+		for i, r := range rules {
+			fmt.Printf("  %s\n", r.Label(i))
+		}
+		return nil
+	}
+	fmt.Print("built-in rule sets — opt in with 'extends' in .tgsieve.yaml:\n\n")
+	for _, name := range config.PresetNames() {
+		rules, err := config.PresetRules(name)
+		if err != nil {
+			return err
+		}
+		attrs := 0
+		for _, r := range rules {
+			attrs += len(r.Attrs)
+		}
+		fmt.Printf("  %-28s %s over %s\n", name, plural(len(rules), "rule"), plural(attrs, "attribute"))
+	}
+	fmt.Print("\n  tgsieve presets <name>   show what one of them hides\n")
 	return nil
 }
 
@@ -510,6 +548,12 @@ hide:
   unchanged_units: true   # units with nothing left to say collapse into a count
   drift: false            # refresh-detected drift gets its own section
   outputs: false
+
+# Curated rule sets shipped with tgsieve. See "tgsieve presets".
+extends: []
+#  - builtin/aws-tags
+#  - builtin/k8s-annotations
+#  - builtin/computed-hashes
 
 # Each rule needs 'attrs'. Globs: * stays inside a path segment group,
 # ** matches anything. Use attrs: ["*"] to drop the whole resource.

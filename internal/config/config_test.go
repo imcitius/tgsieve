@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +82,61 @@ func TestUnknownFieldIsAnError(t *testing.T) {
 	}
 	if _, err := Load(dir, filepath.Join(dir, ".tgsieve.yaml")); err == nil {
 		t.Fatal("a typo in the config should not be silently ignored")
+	}
+}
+
+func TestPresetsExpandAndAreLabelled(t *testing.T) {
+	c := Default()
+	c.Extends = []string{"builtin/computed-hashes"}
+	c.Ignore = []Rule{{Name: "mine", Attrs: []string{"tags.x"}}}
+	if err := Compile(c); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(c.Ignore) != 2 {
+		t.Fatalf("preset rules should be added to the user's own: %d", len(c.Ignore))
+	}
+	// Presets first, so a hand-written rule reads as the last word.
+	if !strings.HasPrefix(c.Ignore[0].Name, "builtin/computed-hashes: ") {
+		t.Errorf("preset rule is not labelled with its origin: %q", c.Ignore[0].Name)
+	}
+	if c.Ignore[1].Name != "mine" {
+		t.Errorf("user rule moved: %q", c.Ignore[1].Name)
+	}
+	if !c.Ignore[0].MatchesAttr("content_sha256") {
+		t.Error("the preset does not actually match what it claims to")
+	}
+}
+
+func TestUnknownPresetIsAnError(t *testing.T) {
+	c := Default()
+	c.Extends = []string{"builtin/nope"}
+	err := Compile(c)
+	if err == nil {
+		t.Fatal("an unknown preset must not be silently ignored")
+	}
+	if !strings.Contains(err.Error(), "builtin/aws-tags") {
+		t.Errorf("the error should list what is available: %v", err)
+	}
+}
+
+func TestNeverHideCanBeCleared(t *testing.T) {
+	if got := Default().NeverHide.List(); len(got) != 2 {
+		t.Fatalf("default safety net = %v", got)
+	}
+	dir := t.TempDir()
+	body := "version: 1\nnever_hide:\n  actions: []\n"
+	if err := os.WriteFile(filepath.Join(dir, ".tgsieve.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(dir, filepath.Join(dir, ".tgsieve.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.NeverHide.List(); len(got) != 0 {
+		t.Errorf("an explicit empty list should turn the net off, got %v", got)
+	}
+	if cfg.NeverHide.Matches("delete", "aws_db_instance") {
+		t.Error("with the net cleared nothing is protected by action")
 	}
 }

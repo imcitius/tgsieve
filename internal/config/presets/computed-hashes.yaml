@@ -1,0 +1,12 @@
+# Digests that restate a change already reported by the content they hash.
+# The content attribute itself is never hidden, so nothing disappears
+# unnoticed — only the six ways of saying it again.
+ignore:
+  - name: content digests
+    attrs:
+      - "content_base64sha256"
+      - "content_base64sha512"
+      - "content_md5"
+      - "content_sha1"
+      - "content_sha256"
+      - "content_sha512"

@@ -403,6 +403,15 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 		line += " · " + rep.Wall.Round(100*time.Millisecond).String()
 	}
 	fmt.Fprintf(w, "  %s\n", p.dim(line))
+	if rep.Severity != "" {
+		counts := []string{}
+		for _, level := range []string{"high", "medium", "low"} {
+			if n := rep.SeverityCounts[level]; n > 0 {
+				counts = append(counts, fmt.Sprintf("%d %s", n, level))
+			}
+		}
+		fmt.Fprintf(w, "  %s\n", p.dim("severity: "+strings.Join(counts, ", ")))
+	}
 	if rep.NoRefresh {
 		fmt.Fprintf(w, "  %s\n", p.yellow("state was not refreshed: anything changed outside terraform is invisible here"))
 	}
