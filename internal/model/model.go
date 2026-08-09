@@ -152,6 +152,8 @@ type Unit struct {
 	Skipped   bool          `json:"skipped,omitempty"`
 	// Reused marks a unit whose plan came from an earlier invocation.
 	Reused bool `json:"reused,omitempty"`
+	// TimedAt is when a reused duration was measured.
+	TimedAt time.Time `json:"timed_at,omitempty"`
 }
 
 type Counts struct {

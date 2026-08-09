@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -299,4 +301,80 @@ func TestLockIgnoresGarbage(t *testing.T) {
 		t.Fatalf("an unreadable lock should be replaced, not fatal: %v", err)
 	}
 	release()
+}
+
+func TestLockRespectsForeignHostUntilStale(t *testing.T) {
+	dir := t.TempDir()
+	writeLock := func(started time.Time) {
+		body := fmt.Sprintf(`{"pid":%d,"started":%q,"host":"another-machine"}`,
+			os.Getpid(), started.Format(time.RFC3339Nano))
+		if err := os.WriteFile(filepath.Join(dir, LockFile), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A live pid number means nothing on another host, so a recent foreign
+	// lock is respected even though this pid exists here.
+	writeLock(time.Now().Add(-time.Minute))
+	if _, err := Lock(dir); err == nil {
+		t.Fatal("a recent lock from another host must be respected")
+	} else if !strings.Contains(err.Error(), "another-machine") {
+		t.Errorf("the error should name the host: %v", err)
+	}
+
+	// Past the staleness window it is taken over, or the directory would stay
+	// locked forever after a crash elsewhere.
+	writeLock(time.Now().Add(-staleAfter - time.Minute))
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatalf("an old foreign lock should be taken over: %v", err)
+	}
+	release()
+}
+
+func TestApplyTimingsIgnoresExpiredMeasurements(t *testing.T) {
+	dir := t.TempDir()
+	fresh := savedTiming{Millis: 500, Recorded: time.Now().Add(-time.Hour)}
+	stale := savedTiming{Millis: 9000, Recorded: time.Now().Add(-timingTTL - time.Hour)}
+	body, _ := json.Marshal(map[string]savedTiming{"envs/a": fresh, "envs/b": stale})
+	if err := os.WriteFile(filepath.Join(dir, TimingsFile), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := model.Run{Units: []model.Unit{{Path: "envs/a"}, {Path: "envs/b"}}}
+	ApplyTimings(dir, &run)
+
+	if run.Units[0].Duration != 500*time.Millisecond || !run.Units[0].Reused {
+		t.Errorf("fresh measurement not applied: %+v", run.Units[0])
+	}
+	if run.Units[1].Duration != 0 {
+		t.Errorf("a measurement older than the TTL must not be reported: %+v", run.Units[1])
+	}
+}
+
+func TestSourceChangesNamesMovedUnits(t *testing.T) {
+	was := Provenance{Commit: "abc", Tree: "1", Sources: map[string]string{
+		"envs/prod/a": "git::https://example.com/mod.git//app?ref=v1.0.0",
+		"envs/prod/b": "git::https://example.com/mod.git//app?ref=v1.0.0",
+		"envs/prod/c": "./modules/app",
+	}}
+	now := was
+	now.Sources = map[string]string{
+		"envs/prod/a": "git::https://example.com/mod.git//app?ref=v1.1.0", // moved
+		"envs/prod/b": "git::https://example.com/mod.git//app?ref=v1.0.0",
+		// c missing: could not be resolved this time
+	}
+
+	if got := was.SourceChanges(now); len(got) != 1 || got[0] != "envs/prod/a" {
+		t.Errorf("SourceChanges = %v, want [envs/prod/a]", got)
+	}
+	if was.SameGeneration(now) {
+		t.Error("a moved module source is a new generation even with an identical repo")
+	}
+
+	// An unresolvable source is unknown, not changed.
+	partial := Provenance{Commit: "abc", Tree: "1"}
+	if len(was.SourceChanges(partial)) != 0 {
+		t.Error("missing source information must not be read as a change")
+	}
 }

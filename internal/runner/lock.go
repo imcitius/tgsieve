@@ -14,6 +14,11 @@ import (
 // report that describes no single moment in time.
 const LockFile = ".tgsieve-lock"
 
+// staleAfter is how long a lock from another machine is respected. Liveness
+// cannot be checked across hosts, so the only alternative to a timeout is a
+// lock that outlives the run that took it.
+const staleAfter = 6 * time.Hour
+
 type lockInfo struct {
 	PID     int       `json:"pid"`
 	Started time.Time `json:"started"`
@@ -43,8 +48,31 @@ func Lock(dir string) (func(), error) {
 		}
 
 		held, readErr := readLock(path)
-		if readErr != nil || !alive(held.PID) {
-			// Stale: the writer is gone, or the file is unreadable garbage.
+		if readErr != nil {
+			// Unreadable garbage: nothing to respect.
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+			continue
+		}
+
+		host, _ := os.Hostname()
+		if held.Host != "" && host != "" && held.Host != host {
+			// A pid from another machine says nothing about whether that run
+			// is alive, so the only safe reading is "held" — until the lock is
+			// old enough that no plan run could still be going.
+			if age := time.Since(held.Started); age < staleAfter {
+				return nil, fmt.Errorf("%s is in use by a tgsieve run on %s (pid %d, started %s)\n"+
+					"  this directory is shared between machines; wait for that run, or use a different --keep-plans directory",
+					dir, held.Host, held.PID, held.Started.Format(time.RFC3339))
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+			continue
+		}
+
+		if !alive(held.PID) {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return nil, err
 			}

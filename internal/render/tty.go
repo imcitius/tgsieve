@@ -183,7 +183,11 @@ func timings(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 			note = p.dim(plural(t.Changes, "change"))
 		}
 		if t.Reused {
-			note += p.dim("  (reused plan)")
+			label := "  (reused plan"
+			if t.Age > time.Hour {
+				label += ", measured " + humanAge(t.Age) + " ago"
+			}
+			note += p.dim(label + ")")
 		}
 		fmt.Fprintf(w, "  %-*s  %8s  %s\n", width, t.Path, t.Duration.Round(time.Millisecond), note)
 	}
@@ -276,6 +280,15 @@ func renderGroup(w io.Writer, p painter, opts Options, g sieve.Group, withAttrs 
 		fmt.Fprintf(w, "      %s\n", p.dim(fmt.Sprintf("… %d more attributes", extra)))
 	}
 	renderHidden(w, p, g)
+}
+
+func humanAge(d time.Duration) string {
+	switch {
+	case d > 48*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
 }
 
 func varyLabel(g sieve.Group) string {

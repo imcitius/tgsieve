@@ -94,17 +94,23 @@ runs cannot interleave plans (stale locks are taken over, live ones reported),
 and per-unit durations remembered across invocations so `--timings` covers the
 whole stack after a resume, marking reused plans.
 
+Also done: resolved `terraform { source }` per unit recorded in provenance
+(rendered per unit in parallel, because `render --all` writes its objects
+unlabelled), cross-host lock handling (respected for six hours, then taken
+over, since pid liveness means nothing on another machine), and a two-week TTL
+on remembered durations with the age shown next to reused measurements.
+
 Still open:
 
-- **Remote module versions.** Provenance covers the configuration in the
-  working directory. A unit whose `terraform { source = "...//module?ref=x" }`
-  moved underneath it looks unchanged to the generation check. Recording the
-  resolved source per unit would close that.
-- **Lock across hosts.** The lock is a pid check, which says nothing about a
-  run on another machine sharing the directory over a network mount.
-- **Timings decay.** Durations are kept forever and never invalidated, so a
-  unit that has since become much faster still reads as the slowest until it
-  runs again.
+- **Floating refs.** A source pinned to a branch (`?ref=main`) reads the same
+  string before and after the branch moves. Resolving it to a commit would
+  need a network call per unit, which is why it is not done here.
+- **Provenance for generated units.** `terragrunt stack generate` writes units
+  that do not exist until the stack is generated; the fingerprint sees the
+  generator, not the result.
+- **Lock contention UX.** A blocked run exits immediately. Waiting for the
+  lock with a timeout would be friendlier in CI, where two pipelines racing on
+  the same directory is normal rather than exceptional.
 
 ## Packaging
 

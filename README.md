@@ -123,6 +123,12 @@ agree. Outside a git repository (a stack pulled from a `--source` URL, an
 unpacked archive) the fingerprint is taken from the configuration files
 themselves, so the check still holds.
 
+The check also covers where each unit's code comes from: a run that keeps its
+plans records every unit's resolved `terraform { source }`, so a remote module
+whose ref moved invalidates the generation even though the repository did not
+change. Sources that cannot be resolved are recorded as unknown rather than
+assumed unchanged.
+
 A `--keep-plans` directory is locked while a run writes to it, so two runs
 cannot interleave their plans into one incoherent report. A lock left by a
 crashed run is taken over automatically; a live one is reported:
@@ -131,9 +137,14 @@ crashed run is taken over automatically; a live one is reported:
 ./plans is in use by another tgsieve run (pid 51216, started 11:40PM)
 ```
 
+A lock written on another machine — a directory shared over a network mount —
+cannot be checked for liveness, so it is respected for six hours and taken over
+after that.
+
 Unit durations are remembered per directory, so after a resume the timings
-cover the whole stack rather than only the units that just ran — reused ones
-are labelled as such.
+cover the whole stack rather than only the units that just ran. Reused
+measurements are labelled with their age and expire after two weeks, since a
+unit that has since been split or sped up should not keep its old reputation.
 
 While the run is in flight you get one status line and nothing else, plus any
 unit's failure the moment it happens rather than at the end:

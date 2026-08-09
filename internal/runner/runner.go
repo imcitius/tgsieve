@@ -39,6 +39,7 @@ type Options struct {
 	Filters        []string // --filter queries (--all only)
 	FilterAffected bool     // --filter-affected (--all only)
 	Parallelism    int      // --parallelism (--all only)
+	KnownUnits     []string // queue already discovered by the caller
 	Progress       *Progress
 	Stderr         io.Writer
 }
@@ -143,7 +144,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// Knowing the size of the queue up front turns "7 units seen" into
 		// "7/28", which is the difference between a spinner and progress.
 		if opts.All {
-			if units, err := Discover(ctx, opts); err == nil {
+			units := opts.KnownUnits
+			if len(units) == 0 {
+				units, _ = Discover(ctx, opts)
+			}
+			if len(units) > 0 {
 				opts.Progress.SetTotal(len(units))
 			}
 		} else {

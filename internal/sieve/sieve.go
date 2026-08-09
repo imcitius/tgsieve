@@ -105,6 +105,8 @@ type UnitTiming struct {
 	// Reused means the duration comes from the run that first planned this
 	// unit, not from this invocation.
 	Reused bool
+	// Age is how old a reused measurement is.
+	Age time.Duration
 }
 
 type RuleStat struct {
@@ -189,9 +191,11 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 			rep.UnitsChanged++
 		}
 		if u.Duration > 0 {
-			rep.Timings = append(rep.Timings, UnitTiming{
-				Path: u.Path, Duration: u.Duration, Changes: unitKept, Reused: u.Reused,
-			})
+			t := UnitTiming{Path: u.Path, Duration: u.Duration, Changes: unitKept, Reused: u.Reused}
+			if u.Reused && !u.TimedAt.IsZero() {
+				t.Age = time.Since(u.TimedAt)
+			}
+			rep.Timings = append(rep.Timings, t)
 		}
 	}
 	sort.Slice(rep.Timings, func(i, j int) bool { return rep.Timings[i].Duration > rep.Timings[j].Duration })

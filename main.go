@@ -34,6 +34,13 @@ const (
 	exitInterrupt = 130
 )
 
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, word)
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
+
 func versionString() string {
 	s := "tgsieve " + version
 	if commit != "" {
@@ -247,6 +254,18 @@ func cmdPlan(args []string) (int, error) {
 	}
 
 	now := runner.CurrentProvenance(ctx, cf.dir, "plan", version)
+	if *keepPlans != "" {
+		// Only worth the extra terragrunt calls when the plans are being kept:
+		// nothing else compares generations.
+		units := []string{"."}
+		if *all {
+			if found, err := runner.Discover(ctx, opts); err == nil {
+				units = found
+				opts.KnownUnits = found
+			}
+		}
+		now.Sources = runner.ModuleSources(ctx, opts, units)
+	}
 
 	reused := 0
 	if *resume {
@@ -354,6 +373,14 @@ func checkGeneration(dir string, now runner.Provenance, force bool) error {
 	}
 	msg := fmt.Sprintf("the plans in %s were made at %s, the working tree is now at %s",
 		dir, was.Describe(), now.Describe())
+	if moved := was.SourceChanges(now); len(moved) > 0 {
+		shown := moved
+		if len(shown) > 3 {
+			shown = shown[:3]
+		}
+		msg = fmt.Sprintf("the module source moved under %s since %s was written (%s)",
+			plural(len(moved), "unit"), dir, strings.Join(shown, ", "))
+	}
 	if force {
 		fmt.Fprintf(os.Stderr, "warning: %s (continuing because --force)\n", msg)
 		return nil

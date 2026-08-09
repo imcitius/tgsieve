@@ -35,12 +35,29 @@ type Provenance struct {
 	// counts as the same generation while an edited one does not.
 	Tree  string `json:"tree,omitempty"`
 	Dirty bool   `json:"dirty,omitempty"`
+	// Sources maps each unit to its resolved module source, so a remote module
+	// that moved is not mistaken for an unchanged stack.
+	Sources map[string]string `json:"sources,omitempty"`
+}
+
+// SourceChanges names the units whose module source differs between two
+// recordings. Units missing from either side are skipped: a source that could
+// not be resolved is unknown, not unchanged.
+func (p Provenance) SourceChanges(q Provenance) []string {
+	var moved []string
+	for unit, was := range p.Sources {
+		if now, ok := q.Sources[unit]; ok && now != was {
+			moved = append(moved, unit)
+		}
+	}
+	sort.Strings(moved)
+	return moved
 }
 
 // SameGeneration reports whether plans recorded as p may be mixed with a run
 // happening in state q.
 func (p Provenance) SameGeneration(q Provenance) bool {
-	return p.Commit == q.Commit && p.Tree == q.Tree
+	return p.Commit == q.Commit && p.Tree == q.Tree && len(p.SourceChanges(q)) == 0
 }
 
 // Describe renders the difference for an error message.
@@ -226,6 +243,11 @@ func SaveTimings(dir string, run model.Run) error {
 	return os.WriteFile(filepath.Join(dir, TimingsFile), append(b, '\n'), 0o644)
 }
 
+// timingTTL is how long a recorded duration is worth believing. A unit that
+// has since been split, moved or sped up should stop being reported as the
+// slowest in the stack on the strength of a stale measurement.
+const timingTTL = 14 * 24 * time.Hour
+
 // ApplyTimings fills in durations for units this invocation did not run, and
 // marks them as reused so the report can say so.
 func ApplyTimings(dir string, run *model.Run) {
@@ -238,11 +260,18 @@ func ApplyTimings(dir string, run *model.Run) {
 		if u.Duration > 0 {
 			continue
 		}
-		if t, ok := saved[u.Path]; ok {
-			u.Duration = time.Duration(t.Millis) * time.Millisecond
-			u.Reused = true
+		t, ok := saved[u.Path]
+		if !ok || expired(t) {
+			continue
 		}
+		u.Duration = time.Duration(t.Millis) * time.Millisecond
+		u.Reused = true
+		u.TimedAt = t.Recorded
 	}
+}
+
+func expired(t savedTiming) bool {
+	return !t.Recorded.IsZero() && time.Since(t.Recorded) > timingTTL
 }
 
 func loadTimings(dir string) map[string]savedTiming {
@@ -253,6 +282,12 @@ func loadTimings(dir string) map[string]savedTiming {
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
 		return map[string]savedTiming{}
+	}
+	// Drop expired entries on read, so the file also stops growing.
+	for k, v := range out {
+		if expired(v) {
+			delete(out, k)
+		}
 	}
 	return out
 }
