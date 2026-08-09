@@ -17,7 +17,24 @@ import (
 	"github.com/imcitius/tgsieve/internal/sieve"
 )
 
-var version = "0.1.0-dev"
+// Overridden at release time via -ldflags -X main.version=… (see .goreleaser.yaml).
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
+
+func versionString() string {
+	s := "tgsieve " + version
+	if commit != "" {
+		s += " (" + commit
+		if date != "" {
+			s += ", " + date
+		}
+		s += ")"
+	}
+	return s
+}
 
 const usage = `tgsieve — terragrunt plans without the wall of text
 
@@ -25,13 +42,17 @@ Usage:
   tgsieve plan [flags] [-- <tofu/terraform args>]   run a plan and show real changes
   tgsieve show <plan-dir> [flags]                   re-render plans saved earlier
   tgsieve rules [flags]                             print the effective sieve config
-  tgsieve init                                      write a starter .tgsieve.yaml
+  tgsieve init                                      write a starter .tgsieve.yaml at the project root
   tgsieve version
 
+The stack is never planned implicitly: without --all only the unit in the
+working directory runs.
+
 Examples:
-  tgsieve plan
-  tgsieve plan -C envs/prod -- -refresh=false
-  tgsieve plan --keep-plans ./plans --out-dir ./tfplans
+  tgsieve plan                                  # this unit only
+  tgsieve plan --all                            # the whole stack below here
+  tgsieve plan -C envs/prod --all -- -refresh=false
+  tgsieve plan --all --keep-plans ./plans --out-dir ./tfplans
   tgsieve show ./plans --explain
 `
 
@@ -52,7 +73,7 @@ func main() {
 	case "init":
 		err = cmdInit(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println("tgsieve", version)
+		fmt.Println(versionString())
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -116,7 +137,10 @@ func cmdPlan(args []string) (int, error) {
 	fs := flag.NewFlagSet("plan", flag.ExitOnError)
 	var cf commonFlags
 	cf.bind(fs)
-	noAll := fs.Bool("no-all", false, "plan only the unit in the working directory")
+	// Opt-in, never implied: a wrapper that quietly widens the blast radius is
+	// how a stack-wide run happens by accident.
+	all := fs.Bool("all", false, "run across the whole stack below the working directory (terragrunt --all)")
+	fs.BoolVar(all, "a", false, "shorthand for --all")
 	keepPlans := fs.String("keep-plans", "", "keep per-unit tfplan.json in this directory")
 	outDir := fs.String("out-dir", "", "save binary plan files here (apply exactly what you reviewed)")
 	tfPath := fs.String("tf-path", "", "tofu/terraform binary terragrunt should call")
@@ -146,7 +170,7 @@ func cmdPlan(args []string) (int, error) {
 	res, err := runner.Run(ctx, runner.Options{
 		Dir:            cf.dir,
 		Binary:         *binary,
-		All:            !*noAll,
+		All:            *all,
 		Command:        "plan",
 		TFArgs:         fs.Args(),
 		TerragruntArgs: strings.Fields(*tgArgs),
@@ -266,15 +290,34 @@ collapse:
 
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	dir := fs.String("C", ".", "directory to write .tgsieve.yaml into")
+	dir := fs.String("C", "", "write the config here instead of the project root")
+	here := fs.Bool("here", false, "write into the current directory")
 	force := fs.Bool("force", false, "overwrite an existing file")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, "tgsieve init [flags]\n\nWrites a starter .tgsieve.yaml at the project root\n"+
+			"(git root, else the top terragrunt config directory).\n\n")
+		fs.PrintDefaults()
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if st, err := os.Stat(*dir); err != nil || !st.IsDir() {
-		return fmt.Errorf("%s is not a directory", *dir)
+
+	target := *dir
+	if target == "" {
+		if *here {
+			target = "."
+		} else {
+			root, err := config.ProjectRoot(".")
+			if err != nil {
+				return err
+			}
+			target = root
+		}
 	}
-	path := filepath.Join(*dir, ".tgsieve.yaml")
+	if st, err := os.Stat(target); err != nil || !st.IsDir() {
+		return fmt.Errorf("%s is not a directory", target)
+	}
+	path := filepath.Join(target, ".tgsieve.yaml")
 	if _, err := os.Stat(path); err == nil && !*force {
 		return fmt.Errorf("%s already exists (use --force to overwrite)", path)
 	}

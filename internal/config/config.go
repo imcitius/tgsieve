@@ -121,6 +121,41 @@ func Load(dir, explicit string) (*Config, error) {
 	return cfg, cfg.compile()
 }
 
+// RootMarkers identify the top of a terragrunt project when there is no git
+// repository to anchor on.
+var RootMarkers = []string{"root.hcl", "terragrunt.hcl", "terragrunt.stack.hcl"}
+
+// ProjectRoot walks up from dir looking for the top of the project: a git
+// repository root, or failing that the highest directory that still carries a
+// terragrunt root config. Falls back to dir itself.
+func ProjectRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	highestMarker := ""
+	for d := abs; ; {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d, nil
+		}
+		for _, m := range RootMarkers {
+			if _, err := os.Stat(filepath.Join(d, m)); err == nil {
+				highestMarker = d
+				break
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	if highestMarker != "" {
+		return highestMarker, nil
+	}
+	return abs, nil
+}
+
 func parseFile(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

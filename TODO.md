@@ -13,6 +13,9 @@ if the working tree changed since the plan, and re-render the same sieved view
 as a confirmation prompt. This is the feature that makes the whole thing a
 workflow rather than a viewer.
 
+`--all` must stay opt-in here as it is for `plan`, and an apply that would
+destroy or replace anything should require a second, explicit confirmation.
+
 ### Baseline / diff-of-diffs
 Fingerprint the sieved report (`Resource.ValueShape` is already the primitive)
 and store it under `.tgsieve/baseline.json`. Then:
@@ -72,8 +75,22 @@ view stops being where the time goes.
 
 ## Packaging
 
-- `goreleaser` + homebrew tap.
-- `--version` from build info (`-ldflags -X main.version`).
+Done: `.goreleaser.yaml` (darwin/linux × amd64/arm64, archives, checksums,
+Homebrew cask), release + CI workflows, version via ldflags.
+
+Left to do before `brew install imcitius/tap/tgsieve` works:
+
+1. Create the public tap repo `imcitius/homebrew-tap` (a bare repo with a
+   `Casks/` directory is enough; goreleaser commits the file).
+2. Add a `HOMEBREW_TAP_TOKEN` secret to this repo — a fine-grained PAT with
+   `contents: write` on the tap repo. Without it the release still publishes,
+   only the cask update is skipped.
+3. Make this repository public. Homebrew downloads release assets
+   unauthenticated, so a tap pointing at a private repo cannot install.
+4. Tag a release: `git tag v0.1.0 && git push --tags`.
+
+Also still open:
+
 - GitHub Action wrapper that posts `--format md` as a PR comment.
-- Repository still lives in a directory named `terrawrap`; rename to `tgsieve`
-  before publishing.
+- Signed / notarized macOS builds, so the cask does not need the quarantine
+  hook.

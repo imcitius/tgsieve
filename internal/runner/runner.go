@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imcitius/tgsieve/internal/config"
 	"github.com/imcitius/tgsieve/internal/model"
 	"github.com/imcitius/tgsieve/internal/textutil"
 	"github.com/imcitius/tgsieve/internal/tfplan"
@@ -92,46 +93,223 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	reportFile := filepath.Join(os.TempDir(), fmt.Sprintf("tgsieve-report-%d.json", time.Now().UnixNano()))
 	defer os.Remove(reportFile)
 
-	args := []string{"run"}
-	if opts.All {
-		args = append(args, "--all")
+	res := &Result{PlanDir: planDir}
+	start := time.Now()
+
+	var stop chan struct{}
+	if opts.Progress != nil {
+		stop = opts.Progress.Watch(planDir)
 	}
-	args = append(args,
+	var runErr error
+	if opts.All {
+		runErr = runStack(ctx, opts, planDir, reportFile, res)
+	} else {
+		runErr = runUnit(ctx, opts, planDir, reportFile, res)
+	}
+	if stop != nil {
+		close(stop)
+		opts.Progress.Done()
+	}
+	res.Duration = time.Since(start)
+	if runErr != nil {
+		return res, runErr
+	}
+
+	run, err := Collect(planDir)
+	if err != nil {
+		return res, err
+	}
+	run.WorkingDir = opts.Dir
+	run.Command = opts.Command
+	applyReport(&run, reportFile, res.Errors)
+	if !opts.All {
+		ensureUnit(&run, opts, res)
+	}
+	res.Run = run
+	return res, nil
+}
+
+// runStack is the --all path: terragrunt writes one tfplan.json per unit into
+// --json-out-dir for us.
+func runStack(ctx context.Context, opts Options, planDir, reportFile string, res *Result) error {
+	args := []string{"run", "--all",
 		"--json-out-dir", planDir,
-		"--log-format", "json",
 		"--report-file", reportFile,
 		"--report-format", "json",
 		"--summary-disable",
-	)
+	}
 	if opts.OutDir != "" {
 		args = append(args, "--out-dir", opts.OutDir)
-	}
-	if tf := resolveTFPath(opts.TFPath); tf != "" {
-		args = append(args, "--tf-path", tf)
 	}
 	args = append(args, opts.TerragruntArgs...)
 	args = append(args, "--", opts.Command)
 	args = append(args, opts.TFArgs...)
+	return stream(ctx, opts, res, args)
+}
 
-	cmd := exec.CommandContext(ctx, opts.Binary, args...)
+// runUnit is the single-unit path. --json-out-dir and --out-dir only apply to
+// --all runs, so here we drive it ourselves: plan to a binary file, then ask
+// terragrunt to render that file as JSON.
+func runUnit(ctx context.Context, opts Options, planDir, reportFile string, res *Result) error {
+	planFile, err := binaryPlanPath(opts)
+	if err != nil {
+		return err
+	}
+	tfArgs, userOut := splitOutArg(opts.TFArgs)
+	if userOut != "" {
+		planFile = userOut
+	} else if opts.OutDir == "" {
+		defer os.Remove(planFile)
+	}
+
+	args := []string{"run",
+		"--report-file", reportFile,
+		"--report-format", "json",
+		"--summary-disable",
+	}
+	args = append(args, opts.TerragruntArgs...)
+	args = append(args, "--", opts.Command, "-out="+planFile)
+	args = append(args, tfArgs...)
+	if err := stream(ctx, opts, res, args); err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return nil // the unit failed; the error lines already tell the story
+	}
+
+	show := []string{"run", "--log-disable", "--tf-forward-stdout"}
+	show = append(show, opts.TerragruntArgs...)
+	show = append(show, "--", "show", "-json", planFile)
+	out, err := output(ctx, opts, show)
+	if err != nil {
+		return fmt.Errorf("rendering the plan as JSON: %w", err)
+	}
+	unitDir := filepath.Join(planDir, unitName(opts.Dir))
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(unitDir, planFileName), out, 0o644)
+}
+
+func binaryPlanPath(opts Options) (string, error) {
+	if opts.OutDir != "" {
+		abs, err := filepath.Abs(opts.OutDir)
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			return "", err
+		}
+		return filepath.Join(abs, "tfplan.tfplan"), nil
+	}
+	f, err := os.CreateTemp("", "tgsieve-*.tfplan")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	f.Close()
+	return name, nil
+}
+
+// splitOutArg honours a -out the caller passed through themselves.
+func splitOutArg(tfArgs []string) (rest []string, out string) {
+	for i := 0; i < len(tfArgs); i++ {
+		a := tfArgs[i]
+		switch {
+		case strings.HasPrefix(a, "-out="), strings.HasPrefix(a, "--out="):
+			out = a[strings.Index(a, "=")+1:]
+		case a == "-out" || a == "--out":
+			if i+1 < len(tfArgs) {
+				out = tfArgs[i+1]
+				i++
+			}
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if out != "" {
+		if abs, err := filepath.Abs(out); err == nil {
+			out = abs
+		}
+	}
+	return rest, out
+}
+
+// unitName labels a single-unit run the same way an --all run would: relative
+// to the project root, so "envs/prod/a" rather than "a".
+func unitName(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil || abs == string(filepath.Separator) {
+		return "unit"
+	}
+	if root, err := config.ProjectRoot(abs); err == nil {
+		if rel, err := filepath.Rel(root, abs); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(abs)
+}
+
+// ensureUnit makes sure a single-unit run that failed before producing a plan
+// still shows up as a failed unit rather than vanishing.
+func ensureUnit(run *model.Run, opts Options, res *Result) {
+	if len(run.Units) > 0 {
+		return
+	}
+	u := model.Unit{Path: unitName(opts.Dir)}
+	if res.ExitCode != 0 || len(res.Errors) > 0 {
+		u.Errored = true
+		u.Error = firstErrorFor(u.Path, res.Errors)
+	}
+	run.Units = append(run.Units, u)
+}
+
+func newCmd(ctx context.Context, opts Options, args []string) *exec.Cmd {
+	full := append([]string{args[0]}, args[1:]...)
+	if tf := resolveTFPath(opts.TFPath); tf != "" {
+		// insert right after the subcommand so it precedes the "--" separator
+		full = append([]string{full[0], "--tf-path", tf}, full[1:]...)
+	}
+	cmd := exec.CommandContext(ctx, opts.Binary, full...)
 	cmd.Dir = opts.Dir
 	cmd.Env = os.Environ()
+	return cmd
+}
+
+// output runs a terragrunt command and returns its stdout.
+func output(ctx context.Context, opts Options, args []string) ([]byte, error) {
+	cmd := newCmd(ctx, opts, args)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", textutil.Headline(msg))
+	}
+	return out, nil
+}
+
+// stream runs a terragrunt command with JSON logging and feeds the progress
+// display, recording errors as they happen.
+func stream(ctx context.Context, opts Options, res *Result, args []string) error {
+	args = append([]string{args[0], "--log-format", "json"}, args[1:]...)
+	cmd := newCmd(ctx, opts, args)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting %s: %w", opts.Binary, err)
+		return fmt.Errorf("starting %s: %w", opts.Binary, err)
 	}
 
-	res := &Result{PlanDir: planDir}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	consume := func(r io.Reader) {
@@ -186,37 +364,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	wg.Add(2)
 	go consume(stdout)
 	go consume(stderr)
-
-	var stop chan struct{}
-	if opts.Progress != nil {
-		stop = opts.Progress.Watch(planDir)
-	}
 	wg.Wait()
-	waitErr := cmd.Wait()
-	if stop != nil {
-		close(stop)
-		opts.Progress.Done()
-	}
-	res.Duration = time.Since(start)
 
+	waitErr := cmd.Wait()
 	var ee *exec.ExitError
 	if waitErr != nil {
 		if errors.As(waitErr, &ee) {
 			res.ExitCode = ee.ExitCode()
 		} else {
-			return res, fmt.Errorf("running %s: %w", opts.Binary, waitErr)
+			return fmt.Errorf("running %s: %w", opts.Binary, waitErr)
 		}
 	}
-
-	run, err := Collect(planDir)
-	if err != nil {
-		return res, err
-	}
-	run.WorkingDir = opts.Dir
-	run.Command = opts.Command
-	applyReport(&run, reportFile, res.Errors)
-	res.Run = run
-	return res, nil
+	return nil
 }
 
 // Collect parses every tfplan.json under dir into units.

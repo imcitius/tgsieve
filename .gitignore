@@ -3,3 +3,4 @@ tgsieve
 .tgsieve/
 .a5c/
 .DS_Store
+dist/
