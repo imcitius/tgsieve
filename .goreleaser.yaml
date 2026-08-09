@@ -50,10 +50,11 @@ homebrew_casks:
       owner: imcitius
       name: homebrew-tap
       branch: main
-      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks
-    # Publishing the cask needs a token for the tap repo. Without one the
-    # release still ships binaries; only the formula update is skipped.
+    # goreleaser accepts only the bare {{ .Env.NAME }} form for a token, so
+    # the missing-key guard lives in skip_upload instead: index returns empty
+    # rather than failing when the variable is not set at all.
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}'
     homepage: https://github.com/imcitius/tgsieve
     description: Terragrunt plans without the wall of text
