@@ -10,6 +10,7 @@ import (
 
 	"github.com/imcitius/tgsieve/internal/config"
 	"github.com/imcitius/tgsieve/internal/model"
+	"github.com/imcitius/tgsieve/internal/textutil"
 )
 
 // Group is one rendered block: a change that may stand for several instances
@@ -83,6 +84,16 @@ type SkippedUnit struct {
 	Reason string
 }
 
+// FailureGroup collects units that failed for the same reason. A missing
+// backend bucket or an expired credential fails every unit in the stack with
+// one message, and printing it once per unit buries the fact that there is a
+// single thing to fix.
+type FailureGroup struct {
+	Headline string
+	Detail   []string
+	Units    []string
+}
+
 // UnitTiming is how long one unit took, for --timings.
 type UnitTiming struct {
 	Path     string
@@ -100,6 +111,7 @@ type RuleStat struct {
 type Report struct {
 	Groups         []Group
 	ErroredUnits   []model.Unit
+	Failures       []FailureGroup
 	SkippedUnits   []SkippedUnit
 	UnchangedUnits []string
 	Outputs        map[string][]model.AttrChange
@@ -119,6 +131,8 @@ type Report struct {
 	Timings []UnitTiming
 	// Wall is the duration of the whole run, when the caller knows it.
 	Wall time.Duration
+	// NoRefresh records that the plan was produced without refreshing state.
+	NoRefresh bool
 }
 
 func (r Report) HasChanges() bool { return r.Kept.Total() > 0 }
@@ -174,6 +188,7 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 	}
 	sort.Slice(rep.Timings, func(i, j int) bool { return rep.Timings[i].Duration > rep.Timings[j].Duration })
 
+	rep.Failures = groupFailures(rep.ErroredUnits)
 	rep.Groups = collapse(kept, cfg)
 	for _, s := range ruleIdx {
 		rep.RuleStats = append(rep.RuleStats, *s)
@@ -339,6 +354,31 @@ func collapse(res []model.Resource, cfg *config.Config) []Group {
 		}
 		return a.Sample.Address < b.Sample.Address
 	})
+	return out
+}
+
+// groupFailures folds units that failed with the same headline together,
+// preserving the order in which they first appeared.
+func groupFailures(units []model.Unit) []FailureGroup {
+	var out []FailureGroup
+	index := map[string]int{}
+	for _, u := range units {
+		head := textutil.Headline(u.Error)
+		if head == "" {
+			head = "failed"
+		}
+		if i, ok := index[head]; ok {
+			out[i].Units = append(out[i].Units, u.Path)
+			continue
+		}
+		index[head] = len(out)
+		out = append(out, FailureGroup{
+			Headline: head,
+			Detail:   textutil.CleanError(u.Error, 8),
+			Units:    []string{u.Path},
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i].Units) > len(out[j].Units) })
 	return out
 }
 

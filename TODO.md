@@ -75,16 +75,24 @@ came out of that: single-unit runs double-counted the unit (terragrunt names it
 by directory, we file the plan under its project-relative path), and skipped
 units were counted as unchanged.
 
+Also done: `--fast` (`-refresh=false`, with the summary stating that the plan
+never looked at reality), root-cause grouping so one expired credential prints
+once rather than once per unit, and `--resume`, which compares the queue
+against the plans already in `--keep-plans` and runs only what is missing.
+
 Still open:
 
-- **Refresh-free planning.** `-refresh=false` is the fastest way to make a
-  heavy stack usable; consider a `--fast` shorthand that sets it and says so
-  in the summary, since the result is less trustworthy.
-- **Backend/auth failures.** They currently surface as ordinary unit failures.
-  They are usually one root cause affecting every unit, and should be
-  summarized once rather than repeated N times.
-- **Resume.** After a partial run (Ctrl-C, or a dependency failure) offer to
-  re-run only the units that never produced a plan.
+- **Error taxonomy.** Grouping is by identical headline, which catches
+  credential and backend failures because their messages are identical. Errors
+  that differ only by a resource name or region still split into separate
+  groups; normalizing those would fold more of them together.
+- **Resume across code changes.** `--resume` reuses plans whatever happened to
+  the configuration in between. Recording the git SHA (and dirty state) beside
+  the plans, and refusing to mix generations without `--force`, would make it
+  safe rather than merely convenient.
+- **Partial stack failure exit code.** Everything non-zero is currently `1`.
+  Distinguishing "some units failed" from "tgsieve itself failed" would let CI
+  react differently.
 
 ## Packaging
 

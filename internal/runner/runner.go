@@ -632,7 +632,17 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 	return true
 }
 
+// firstErrorFor picks the error that belongs to one unit. terragrunt reports a
+// stack failure as a single blob listing every unit, so the blob is split and
+// only the part naming this unit is kept.
 func firstErrorFor(unit string, errs []string) string {
+	for _, e := range errs {
+		for _, part := range textutil.SplitErrors(e) {
+			if strings.Contains(part, unit) {
+				return part
+			}
+		}
+	}
 	for _, e := range errs {
 		if strings.Contains(e, unit) {
 			return e

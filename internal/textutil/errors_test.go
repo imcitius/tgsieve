@@ -48,3 +48,42 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+const stackBlob = `Run failed: 2 errors occurred:
+
+* Failed to execute "tofu plan" in ./envs/dev/a/.terragrunt-cache/abc123/def456
+  Error: Reference to undeclared input variable
+  on main.tf line 56:
+  exit status 1
+
+* Failed to execute "tofu plan" in ./envs/prod/b/.terragrunt-cache/xyz789/uvw000
+  Error: Something else entirely
+  exit status 1
+`
+
+func TestSplitErrorsSeparatesUnits(t *testing.T) {
+	parts := SplitErrors(stackBlob)
+	if len(parts) != 3 {
+		t.Fatalf("want the preamble plus one part per failure, got %d: %#v", len(parts), parts)
+	}
+	if !contains(parts[1], "envs/dev/a") || contains(parts[1], "envs/prod/b") {
+		t.Errorf("part 1 should be only dev/a's failure: %q", parts[1])
+	}
+	if !contains(parts[2], "Something else entirely") {
+		t.Errorf("part 2 lost its diagnostic: %q", parts[2])
+	}
+}
+
+func TestSplitErrorsPassesThroughSingleErrors(t *testing.T) {
+	if got := SplitErrors("Error: just one thing"); len(got) != 1 || got[0] != "Error: just one thing" {
+		t.Errorf("SplitErrors = %#v", got)
+	}
+}
+
+func TestCleanErrorDropsCachePaths(t *testing.T) {
+	in := `Failed to execute "tofu plan" in ./envs/dev/a/.terragrunt-cache/abc123/def456`
+	got := CleanError(in, 0)
+	if len(got) != 1 || got[0] != `Failed to execute "tofu plan" in ./envs/dev/a` {
+		t.Errorf("cache path not trimmed: %#v", got)
+	}
+}

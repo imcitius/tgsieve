@@ -86,6 +86,27 @@ Scoping and pacing a stack run: `--filter <query>` (repeatable),
 `--parallelism N` are passed through to terragrunt. All three need `--all`,
 because there is no queue to filter or pace without it.
 
+`--fast` skips the refresh (`-refresh=false`). On a heavy stack that is the
+single biggest speed-up available, and the summary says so every time, because
+a plan that never looked at reality can report "no changes" for a stack that
+has drifted:
+
+```
+state was not refreshed: anything changed outside terraform is invisible here
+```
+
+`--resume` picks up where an interrupted or partly failed run stopped. It
+compares the queue against the plans already in `--keep-plans` and runs only
+the units that never produced one:
+
+```bash
+tgsieve plan --all --keep-plans ./plans          # 40 units, Ctrl-C at 31
+tgsieve plan --all --keep-plans ./plans --resume # runs the missing 9
+```
+
+The final report covers all of them — reused plans and fresh ones — and says
+how many were reused.
+
 While the run is in flight you get one status line and nothing else, plus any
 unit's failure the moment it happens rather than at the end:
 
@@ -102,6 +123,17 @@ heartbeat line every 30 seconds, so CI logs still show liveness.
 
 Ctrl-C forwards the interrupt so terraform can release its state locks, prints
 the report for whatever finished, lists the rest under `NOT RUN`, and exits 130.
+
+When a whole stack fails for one reason — an expired credential, a backend
+that does not exist — the error is printed once with the units it hit, not once
+per unit:
+
+```
+FAILED (5)
+  ✗ 5 units, same error
+      envs/dev/a, envs/dev/b, envs/prod/a, +2 more
+      Error: no valid credential sources found
+```
 
 Exit codes: `0` fine, `1` a unit failed, `2` changes survived the sieve (only
 with `--detailed-exitcode`).

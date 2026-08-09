@@ -165,6 +165,8 @@ func cmdPlan(args []string) (int, error) {
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
+	fast := fs.Bool("fast", false, "skip the refresh (-refresh=false): much faster, but blind to out-of-band changes")
+	resume := fs.Bool("resume", false, "only run units that have no plan in --keep-plans yet")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "tgsieve plan [flags] [-- <tofu/terraform args>]\n\n")
 		fs.PrintDefaults()
@@ -185,6 +187,14 @@ func cmdPlan(args []string) (int, error) {
 	if *parallelism > 0 && !*all {
 		return 1, fmt.Errorf("--parallelism paces a stack run: add --all")
 	}
+	if *resume {
+		if *keepPlans == "" {
+			return 1, fmt.Errorf("--resume needs --keep-plans <dir>: that is where the earlier plans are")
+		}
+		if !*all {
+			return 1, fmt.Errorf("--resume picks up the rest of a stack run: add --all")
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -193,12 +203,17 @@ func cmdPlan(args []string) (int, error) {
 	prog := runner.NewProgress(os.Stderr, isTTY(os.Stderr), cf.verbose)
 	prog.Color = color
 
-	res, err := runner.Run(ctx, runner.Options{
+	tfArgs := fs.Args()
+	if *fast && !hasRefreshFlag(tfArgs) {
+		tfArgs = append([]string{"-refresh=false"}, tfArgs...)
+	}
+
+	opts := runner.Options{
 		Dir:            cf.dir,
 		Binary:         *binary,
 		All:            *all,
 		Command:        "plan",
-		TFArgs:         fs.Args(),
+		TFArgs:         tfArgs,
 		TerragruntArgs: strings.Fields(*tgArgs),
 		JSONOutDir:     *keepPlans,
 		OutDir:         *outDir,
@@ -207,14 +222,36 @@ func cmdPlan(args []string) (int, error) {
 		FilterAffected: *filterAffected,
 		Parallelism:    *parallelism,
 		Progress:       prog,
-	})
+	}
+
+	reused := 0
+	if *resume {
+		done, missing, err := resumeSplit(ctx, opts, *keepPlans)
+		if err != nil {
+			return 1, err
+		}
+		reused = done
+		if len(missing) == 0 {
+			fmt.Fprintf(os.Stderr, "nothing to resume: all %d units already have plans in %s\n", reused, *keepPlans)
+			return renderSaved(*keepPlans, cfg, cf, *detailed)
+		}
+		opts.Filters = missing
+		opts.FilterAffected = false // already folded into the unit list
+		fmt.Fprintf(os.Stderr, "resuming: %d units already planned, %d to run\n", reused, len(missing))
+	}
+
+	res, err := runner.Run(ctx, opts)
 	if err != nil {
 		return 1, err
 	}
 
 	rep := sieve.Apply(res.Run, cfg)
 	rep.Wall = res.Duration
+	rep.NoRefresh = refreshDisabled(tfArgs)
 	render.TTY(os.Stdout, rep, cf.renderOpts())
+	if reused > 0 {
+		fmt.Fprintf(os.Stderr, "  %d of the plans above were reused from a previous run\n", reused)
+	}
 
 	if res.Interrupted {
 		// Whatever finished before Ctrl-C is still worth reading, so the
@@ -226,6 +263,73 @@ func cmdPlan(args []string) (int, error) {
 		return 1, nil
 	}
 	if *detailed && rep.HasChanges() {
+		return 2, nil
+	}
+	return 0, nil
+}
+
+// hasRefreshFlag reports whether the caller already decided about refreshing.
+func hasRefreshFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-refresh" || a == "--refresh" || strings.HasPrefix(a, "-refresh=") || strings.HasPrefix(a, "--refresh=") {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshDisabled reports whether this plan skipped the refresh, however that
+// was asked for. The report says so, because a stale plan that looks clean is
+// worse than a slow one.
+func refreshDisabled(args []string) bool {
+	for i, a := range args {
+		switch {
+		case a == "-refresh=false", a == "--refresh=false":
+			return true
+		case a == "-refresh", a == "--refresh":
+			return i+1 < len(args) && args[i+1] == "false"
+		}
+	}
+	return false
+}
+
+// resumeSplit compares the units the run would cover with the plans already
+// sitting in dir, and returns how many are done plus the ones still missing.
+func resumeSplit(ctx context.Context, opts runner.Options, dir string) (int, []string, error) {
+	discovered, err := runner.Discover(ctx, opts)
+	if err != nil {
+		return 0, nil, fmt.Errorf("listing units to resume: %w", err)
+	}
+	saved, err := runner.Collect(dir)
+	if err != nil {
+		return 0, nil, err
+	}
+	have := make(map[string]bool, len(saved.Units))
+	for _, u := range saved.Units {
+		have[u.Path] = true
+	}
+	var missing []string
+	done := 0
+	for _, u := range discovered {
+		if have[u] {
+			done++
+			continue
+		}
+		missing = append(missing, u)
+	}
+	return done, missing, nil
+}
+
+// renderSaved prints the report for plans already on disk, without running
+// anything.
+func renderSaved(dir string, cfg *config.Config, cf commonFlags, detailed bool) (int, error) {
+	run, err := runner.Collect(dir)
+	if err != nil {
+		return 1, err
+	}
+	rep := sieve.Apply(run, cfg)
+	render.TTY(os.Stdout, rep, cf.renderOpts())
+	if detailed && rep.HasChanges() {
 		return 2, nil
 	}
 	return 0, nil

@@ -12,7 +12,6 @@ import (
 
 	"github.com/imcitius/tgsieve/internal/model"
 	"github.com/imcitius/tgsieve/internal/sieve"
-	"github.com/imcitius/tgsieve/internal/textutil"
 )
 
 type Options struct {
@@ -82,9 +81,26 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 
 	if len(rep.ErroredUnits) > 0 {
 		fmt.Fprintf(w, "\n%s\n", p.bold(p.red(fmt.Sprintf("FAILED (%d)", len(rep.ErroredUnits)))))
-		for _, u := range rep.ErroredUnits {
-			fmt.Fprintf(w, "  %s %s\n", p.red("✗"), p.bold(u.Path))
-			for _, line := range textutil.CleanError(u.Error, 8) {
+		for _, g := range rep.Failures {
+			scope := g.Units[0]
+			if len(g.Units) > 1 {
+				scope = plural(len(g.Units), "unit") + ", same error"
+			}
+			fmt.Fprintf(w, "  %s %s\n", p.red("✗"), p.bold(scope))
+			if len(g.Units) > 1 {
+				shown := g.Units
+				extra := 0
+				if len(shown) > opts.MaxUnits {
+					extra = len(shown) - opts.MaxUnits
+					shown = shown[:opts.MaxUnits]
+				}
+				line := strings.Join(shown, ", ")
+				if extra > 0 {
+					line += fmt.Sprintf(", +%d more", extra)
+				}
+				fmt.Fprintf(w, "      %s\n", p.dim(line))
+			}
+			for _, line := range g.Detail {
 				fmt.Fprintf(w, "      %s\n", p.dim(line))
 			}
 		}
@@ -357,6 +373,9 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 		line += " · " + rep.Wall.Round(100*time.Millisecond).String()
 	}
 	fmt.Fprintf(w, "  %s\n", p.dim(line))
+	if rep.NoRefresh {
+		fmt.Fprintf(w, "  %s\n", p.yellow("state was not refreshed: anything changed outside terraform is invisible here"))
+	}
 	if len(rep.Timings) > 0 && !opts.Timings {
 		slowest := rep.Timings[0]
 		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("slowest: %s (%s) — --timings for the rest",

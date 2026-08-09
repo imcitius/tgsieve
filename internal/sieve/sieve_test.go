@@ -183,3 +183,32 @@ func TestSkippedUnitsAreNotCountedAsUnchanged(t *testing.T) {
 		t.Errorf("reason lost: %q", rep.SkippedUnits[0].Reason)
 	}
 }
+
+func TestFailuresGroupByRootCause(t *testing.T) {
+	boom := "Error: no valid credential sources found\ndetail line"
+	other := "Error: Unsupported argument\nsomething"
+	run := model.Run{Units: []model.Unit{
+		{Path: "a", Errored: true, Error: boom},
+		{Path: "b", Errored: true, Error: other},
+		{Path: "c", Errored: true, Error: boom},
+		{Path: "d", Errored: true, Error: boom},
+	}}
+
+	rep := Apply(run, config.Default())
+	if len(rep.ErroredUnits) != 4 {
+		t.Fatalf("every failure still counts: %d", len(rep.ErroredUnits))
+	}
+	if len(rep.Failures) != 2 {
+		t.Fatalf("want 2 root causes, got %d: %+v", len(rep.Failures), rep.Failures)
+	}
+	// Biggest group first: one fix unblocks three units.
+	if got := rep.Failures[0].Units; len(got) != 3 {
+		t.Errorf("largest group = %v", got)
+	}
+	if rep.Failures[0].Headline != "Error: no valid credential sources found" {
+		t.Errorf("headline = %q", rep.Failures[0].Headline)
+	}
+	if len(rep.Failures[0].Detail) == 0 {
+		t.Error("the group kept no detail to act on")
+	}
+}
