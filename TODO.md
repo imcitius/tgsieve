@@ -60,23 +60,31 @@ view stops being where the time goes.
 
 ## Runner improvements
 
-Done: queue size up front via `terragrunt find` (so progress reads `7/28`),
-`--timings` with per-unit durations and wall time, first-class `--filter` /
-`--filter-affected`, graceful Ctrl-C (SIGINT is forwarded so terraform can
-release its locks; whatever finished still renders, the rest is reported as
-`NOT RUN`, exit 130), and a plain heartbeat line for non-tty runs.
+Done: queue size up front via `terragrunt find` (progress reads `7/28 planned ·
+4 running`), `--timings` with per-unit durations and wall time, first-class
+`--filter` / `--filter-affected` / `--parallelism`, graceful Ctrl-C (SIGINT is
+forwarded so terraform can release its locks; whatever finished still renders,
+the rest is reported as `NOT RUN`, exit 130), a plain heartbeat line for
+non-tty runs, and resource-level progress for single-unit runs read from
+terraform's `-json` stream.
+
+Verified against OpenTofu 1.12.5 as well as Terraform 1.15.5: same plan
+`format_version` (1.2), same keys, and the drift path was exercised with real
+`resource_drift` data by deleting files a `local_file` resource owned. Two bugs
+came out of that: single-unit runs double-counted the unit (terragrunt names it
+by directory, we file the plan under its project-relative path), and skipped
+units were counted as unchanged.
 
 Still open:
 
-- **OpenTofu.** `resolveTFPath` prefers tofu when present, but nothing here has
-  been exercised against it. Its plan JSON has diverged slightly from
-  terraform's (`resource_drift` details in particular), and `terragrunt find`
-  output should be checked too.
-- **Progress during long single units.** The queue-size trick does nothing for
-  one big unit; terraform's own `-json` stream could drive a per-resource
-  counter there.
-- **Parallelism control.** `--parallelism` passthrough, plus a note in the
-  status line when units are queued behind the DAG rather than running.
+- **Refresh-free planning.** `-refresh=false` is the fastest way to make a
+  heavy stack usable; consider a `--fast` shorthand that sets it and says so
+  in the summary, since the result is less trustworthy.
+- **Backend/auth failures.** They currently surface as ordinary unit failures.
+  They are usually one root cause affecting every unit, and should be
+  summarized once rather than repeated N times.
+- **Resume.** After a partial run (Ctrl-C, or a dependency failure) offer to
+  re-run only the units that never produced a plan.
 
 ## Packaging
 

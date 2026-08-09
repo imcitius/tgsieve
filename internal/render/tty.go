@@ -348,8 +348,8 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 	}
 
 	fmt.Fprintf(w, "\n%s  %s\n", p.bold("SUMMARY"), strings.Join(parts, "  "))
-	line := fmt.Sprintf("%d units · %d with changes · %d unchanged · %d failed",
-		rep.UnitsTotal, rep.UnitsChanged, len(rep.UnchangedUnits), len(rep.ErroredUnits))
+	line := fmt.Sprintf("%s · %d with changes · %d unchanged · %d failed",
+		plural(rep.UnitsTotal, "unit"), rep.UnitsChanged, len(rep.UnchangedUnits), len(rep.ErroredUnits))
 	if n := len(rep.SkippedUnits); n > 0 {
 		line += fmt.Sprintf(" · %d not run", n)
 	}

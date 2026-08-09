@@ -164,6 +164,7 @@ func cmdPlan(args []string) (int, error) {
 	var filters stringList
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
+	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "tgsieve plan [flags] [-- <tofu/terraform args>]\n\n")
 		fs.PrintDefaults()
@@ -180,6 +181,9 @@ func cmdPlan(args []string) (int, error) {
 	// so beats silently widening the run to the whole stack.
 	if (len(filters) > 0 || *filterAffected) && !*all {
 		return 1, fmt.Errorf("--filter/--filter-affected select units from a stack: add --all")
+	}
+	if *parallelism > 0 && !*all {
+		return 1, fmt.Errorf("--parallelism paces a stack run: add --all")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -201,6 +205,7 @@ func cmdPlan(args []string) (int, error) {
 		TFPath:         *tfPath,
 		Filters:        filters,
 		FilterAffected: *filterAffected,
+		Parallelism:    *parallelism,
 		Progress:       prog,
 	})
 	if err != nil {

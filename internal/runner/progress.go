@@ -22,19 +22,35 @@ type Progress struct {
 	verbose bool
 	Color   bool
 
-	mu       sync.Mutex
-	units    map[string]bool
-	total    int
-	planned  int
-	errors   int
-	frame    int
-	start    time.Time
-	lastBeat time.Time
-	finished bool
+	mu        sync.Mutex
+	units     map[string]bool
+	total     int
+	planned   int
+	refreshed int
+	resources int
+	errors    int
+	frame     int
+	start     time.Time
+	lastBeat  time.Time
+	finished  bool
 }
 
 // heartbeat is how often a non-tty run reports that it is still alive.
 const heartbeat = 30 * time.Second
+
+// Refreshed counts one resource whose state terraform just re-read.
+func (p *Progress) Refreshed() {
+	p.mu.Lock()
+	p.refreshed++
+	p.mu.Unlock()
+}
+
+// PlannedResource counts one resource terraform decided to change.
+func (p *Progress) PlannedResource() {
+	p.mu.Lock()
+	p.resources++
+	p.mu.Unlock()
+}
 
 // SetTotal records how many units the run is expected to cover.
 func (p *Progress) SetTotal(n int) {
@@ -148,13 +164,38 @@ func (p *Progress) beat() {
 	fmt.Fprintln(p.w, line)
 }
 
-// progressLabel is "7/28 planned" when the queue size is known, "7 planned"
-// when it is not. Caller holds the lock.
+// progressLabel describes how far the run has got. Caller holds the lock.
+//
+// A stack is measured in units ("7/28 planned"); a single unit has no such
+// scale, so it is measured in the resources terraform reports as it goes.
 func (p *Progress) progressLabel() string {
-	if p.total > 0 {
-		return fmt.Sprintf("%d/%d planned", p.planned, p.total)
+	if p.total == 1 {
+		switch {
+		case p.resources > 0:
+			return fmt.Sprintf("%s refreshed · %d to change",
+				plural(p.refreshed, "resource"), p.resources)
+		case p.refreshed > 0:
+			return plural(p.refreshed, "resource") + " refreshed"
+		}
+		return "1 unit"
 	}
-	return fmt.Sprintf("%d planned", p.planned)
+	label := fmt.Sprintf("%d planned", p.planned)
+	if p.total > 0 {
+		label = fmt.Sprintf("%d/%d planned", p.planned, p.total)
+	}
+	// Units terragrunt has started but not finished. The rest of the queue is
+	// waiting on the DAG, which is worth distinguishing from a stalled run.
+	if running := len(p.units) - p.planned; running > 0 {
+		label += fmt.Sprintf(" · %d running", running)
+	}
+	return label
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, word)
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }
 
 func (p *Progress) draw() {

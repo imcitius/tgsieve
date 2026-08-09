@@ -39,7 +39,13 @@ Two terragrunt details this works around:
   parallel interleave with no way to tell them apart.
 - `--json-out-dir` and `--out-dir` only apply to `--all` runs. For a
   single unit `tgsieve` drives it itself: plan to a binary file, then
-  `terragrunt run -- show -json <file>` to get the same document.
+  `terragrunt run -- show -json <file>` to get the same document. That path
+  can also ask terraform for `-json` directly, which is what feeds
+  resource-level progress — with one unit there is nothing to interleave with.
+
+Works with either backing binary: terragrunt defaults to `tofu`, and if that
+is not installed but `terraform` is, `tgsieve` points it at `terraform` rather
+than failing. Both are exercised against the same stack, including drift.
 
 ## Install
 
@@ -75,16 +81,27 @@ Useful flags: `-v` (attributes for creates and destroys too), `--show-empty`,
 `--max-attrs`, `--max-units`, `--out-dir` (keep binary plans so you can apply
 exactly what you reviewed), `--tg-args` (pass extra flags to terragrunt).
 
-Scoping a stack run: `--filter <query>` (repeatable) and `--filter-affected`
-(only units touched between `main` and `HEAD`) are passed through to
-terragrunt. Both need `--all`, because there is no queue to filter without it.
+Scoping and pacing a stack run: `--filter <query>` (repeatable),
+`--filter-affected` (only units touched between `main` and `HEAD`) and
+`--parallelism N` are passed through to terragrunt. All three need `--all`,
+because there is no queue to filter or pace without it.
 
-While the run is in flight you get one status line — `7/28 planned`, the queue
-size coming from `terragrunt find` — plus any unit's failure the moment it
-happens rather than at the end. Outside a terminal that becomes a plain
-heartbeat line every 30 seconds, so CI logs still show progress. Ctrl-C stops
-the run, prints the report for whatever finished, lists the rest under
-`NOT RUN`, and exits 130.
+While the run is in flight you get one status line and nothing else, plus any
+unit's failure the moment it happens rather than at the end:
+
+```
+⠴ planning · 12/28 planned · 4 running · 47s
+```
+
+The queue size comes from `terragrunt find`, so the denominator is known before
+the first unit starts, and `running` separates work in flight from units still
+waiting on the DAG. A single-unit run has no such scale, so it counts resources
+instead — `8 resources refreshed · 1 to change` — read from terraform's own
+`-json` event stream. Outside a terminal all of this collapses to a plain
+heartbeat line every 30 seconds, so CI logs still show liveness.
+
+Ctrl-C forwards the interrupt so terraform can release its state locks, prints
+the report for whatever finished, lists the rest under `NOT RUN`, and exits 130.
 
 Exit codes: `0` fine, `1` a unit failed, `2` changes survived the sieve (only
 with `--detailed-exitcode`).

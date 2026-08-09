@@ -11,7 +11,9 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,7 @@ type Options struct {
 	TFPath         string   // --tf-path override
 	Filters        []string // --filter queries (--all only)
 	FilterAffected bool     // --filter-affected (--all only)
+	Parallelism    int      // --parallelism (--all only)
 	Progress       *Progress
 	Stderr         io.Writer
 }
@@ -61,6 +64,31 @@ type LogLine struct {
 	TFPath     string   `json:"tf-path"`
 	TFArgs     []string `json:"tf-command-args"`
 	Prefix     string   `json:"prefix"`
+}
+
+// TFEvent is one record of terraform's own `-json` stream. A single-unit run
+// asks for it so progress can be reported per resource; a stack run cannot,
+// because terragrunt forwards these lines unlabelled and units interleave.
+type TFEvent struct {
+	Level   string `json:"@level"`
+	Message string `json:"@message"`
+	Type    string `json:"type"`
+	Change  struct {
+		Resource struct {
+			Addr string `json:"addr"`
+		} `json:"resource"`
+		Action string `json:"action"`
+	} `json:"change"`
+	Hook struct {
+		Resource struct {
+			Addr string `json:"addr"`
+		} `json:"resource"`
+	} `json:"hook"`
+	Diagnostic struct {
+		Severity string `json:"severity"`
+		Summary  string `json:"summary"`
+		Detail   string `json:"detail"`
+	} `json:"diagnostic"`
 }
 
 type reportEntry struct {
@@ -149,7 +177,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	run.WorkingDir = opts.Dir
 	run.Command = opts.Command
-	applyReport(&run, reportFile, res.Errors)
+	applyReport(&run, reportFile, res.Errors, opts.All)
 	if !opts.All {
 		ensureUnit(&run, opts, res)
 	}
@@ -171,6 +199,9 @@ func runStack(ctx context.Context, opts Options, planDir, reportFile string, res
 	}
 	if opts.OutDir != "" {
 		args = append(args, "--out-dir", opts.OutDir)
+	}
+	if opts.Parallelism > 0 {
+		args = append(args, "--parallelism", strconv.Itoa(opts.Parallelism))
 	}
 	args = append(args, opts.filterArgs()...)
 	args = append(args, opts.TerragruntArgs...)
@@ -201,6 +232,11 @@ func runUnit(ctx context.Context, opts Options, planDir, reportFile string, res 
 	}
 	args = append(args, opts.TerragruntArgs...)
 	args = append(args, "--", opts.Command, "-out="+planFile)
+	if !hasJSONFlag(tfArgs) {
+		// Drives the per-resource progress counter. Safe here because only one
+		// unit is running, so nothing interleaves with it.
+		args = append(args, "-json")
+	}
 	args = append(args, tfArgs...)
 	if err := stream(ctx, opts, res, args); err != nil {
 		return err
@@ -221,6 +257,15 @@ func runUnit(ctx context.Context, opts Options, planDir, reportFile string, res 
 		return err
 	}
 	return os.WriteFile(filepath.Join(unitDir, planFileName), out, 0o644)
+}
+
+func hasJSONFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-json" || a == "--json" {
+			return true
+		}
+	}
+	return false
 }
 
 func binaryPlanPath(opts Options) (string, error) {
@@ -388,8 +433,14 @@ func stream(ctx context.Context, opts Options, res *Result, args []string) error
 			}
 			var ll LogLine
 			if err := json.Unmarshal([]byte(line), &ll); err != nil || ll.Level == "" {
-				// Not a terragrunt log record (e.g. raw tf output): keep it,
-				// but only surface it in verbose mode.
+				// Not a terragrunt log record. terraform's own -json events
+				// arrive here verbatim when a single unit runs.
+				mu.Lock()
+				if handleTFEvent(line, opts, res) {
+					mu.Unlock()
+					continue
+				}
+				mu.Unlock()
 				if opts.Progress != nil {
 					opts.Progress.Raw(line)
 				}
@@ -474,9 +525,13 @@ func Collect(dir string) (model.Run, error) {
 }
 
 // applyReport folds terragrunt's run report into the units: durations for the
-// ones that ran, plus synthetic units for the ones that failed before writing
-// a plan file.
-func applyReport(run *model.Run, reportFile string, errs []string) {
+// ones that ran, plus — for stack runs only — synthetic units for the ones
+// that failed before writing a plan file.
+//
+// A single-unit run must not synthesize: terragrunt names that unit by its
+// directory alone ("b") while the plan is filed under its project-relative
+// path ("envs/prod/b"), and treating those as two units double-counts one.
+func applyReport(run *model.Run, reportFile string, errs []string, synthesize bool) {
 	b, err := os.ReadFile(reportFile)
 	if err != nil {
 		return
@@ -488,10 +543,20 @@ func applyReport(run *model.Run, reportFile string, errs []string) {
 	byPath := map[string]*model.Unit{}
 	for i := range run.Units {
 		byPath[run.Units[i].Path] = &run.Units[i]
+		if base := path.Base(run.Units[i].Path); base != run.Units[i].Path {
+			byPath[base] = &run.Units[i]
+		}
 	}
 	for _, e := range entries {
 		name := filepath.ToSlash(e.Name)
 		u, ok := byPath[name]
+		if !ok && !synthesize {
+			if len(run.Units) == 1 {
+				u, ok = &run.Units[0], true
+			} else {
+				continue
+			}
+		}
 		if !ok {
 			nu := model.Unit{Path: name}
 			switch e.Result {
@@ -537,6 +602,34 @@ func markInterrupted(run *model.Run) {
 			u.Error = "interrupted"
 		}
 	}
+}
+
+// handleTFEvent feeds terraform's own progress events into the display and
+// reports whether the line was one. Caller holds the lock.
+func handleTFEvent(line string, opts Options, res *Result) bool {
+	var ev TFEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.Type == "" {
+		return false
+	}
+	switch ev.Type {
+	case "refresh_complete":
+		if opts.Progress != nil {
+			opts.Progress.Refreshed()
+		}
+	case "planned_change":
+		if opts.Progress != nil {
+			opts.Progress.PlannedResource()
+		}
+	case "diagnostic":
+		if ev.Diagnostic.Severity == "error" {
+			msg := strings.TrimSpace(ev.Diagnostic.Summary + ": " + ev.Diagnostic.Detail)
+			res.Errors = append(res.Errors, msg)
+			if opts.Progress != nil {
+				opts.Progress.Error(textutil.Headline(msg))
+			}
+		}
+	}
+	return true
 }
 
 func firstErrorFor(unit string, errs []string) string {
