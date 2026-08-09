@@ -229,6 +229,10 @@ hide:
 ignore:
   - name: tag churn
     attrs: ["tags.LastModified", "tags.git_commit", "tags_all.*"]
+  - name: waiting on the provider fix
+    type: aws_ecs_service
+    attrs: ["capacity_provider_strategy.*"]
+    expires: 2026-12-01     # after this date the rule stops hiding, loudly
   - name: ecs task revision
     type: aws_ecs_task_definition
     attrs: ["revision"]
@@ -262,6 +266,19 @@ patterns `/` carries no structure — it lives inside keys like
 written the ordinary way covers the quoted form as well: `labels.*` matches
 both `labels.plain` and `labels["app.kubernetes.io/name"]`.
 
+### Expiring a suppression
+
+A rule can carry `expires: YYYY-MM-DD`. Past that date it stops hiding
+anything and the report names it:
+
+```
+1 rule expired and no longer hides anything: waiting on the provider fix
+```
+
+It fails open on purpose. A suppression that quietly outlives its reason is
+the failure this tool is supposed to prevent, so the lapse restores the
+changes rather than silently continuing to swallow them.
+
 ### Presets
 
 `tgsieve presets` lists the rule sets shipped with the tool, and
@@ -289,6 +306,19 @@ its name, so `--explain` says where a suppression came from.
 - **`--explain` shows every hidden attribute and the rule that hid it**, and
   the footer always states how much was hidden.
 
+## Drift
+
+Refresh-detected drift is split by what the plan intends to do about it:
+
+```
+DRIFT — this plan puts it back (2)
+DRIFT — this plan leaves it (1)
+```
+
+The second is the one that bites: an attribute under `ignore_changes`, or a
+resource the configuration no longer governs, stays drifted after the apply.
+The summary carries the same distinction — `!3 drift (1 not addressed)`.
+
 ## Reading collections
 
 Terraform renders sets as arrays, so a set that comes back in a different order
@@ -302,6 +332,17 @@ input.cidrs  - "10.0.3.0/24"
 input.cidrs  - "10.0.2.0/24"
 input.cidrs  + "10.0.9.0/24"
 ```
+
+Objects inside a collection are matched by an identity field — `id`, `name`,
+`key`, `cidr_block` and a few others — when every member carries one and it is
+unique. An edited security group rule then reads as an edit:
+
+```
+ingress["web"].to_port  80 → 8080
+```
+
+rather than one object leaving and a nearly identical one arriving. A repeated
+value is a label rather than an identity, and is not used for matching.
 
 Positions are still used when they are the clearer story — an element edited in
 place, or items appended to the end — and only abandoned once the lengths

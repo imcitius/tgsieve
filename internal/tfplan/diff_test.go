@@ -2,6 +2,7 @@ package tfplan
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/imcitius/tgsieve/internal/model"
@@ -286,5 +287,94 @@ func TestAppendingToAListStaysPositional(t *testing.T) {
 	attrs := Diff(ch)
 	if len(attrs) != 1 || attrs[0].Path != "zones.2" {
 		t.Fatalf("want a single positional addition, got %+v", attrs)
+	}
+}
+
+func TestObjectsInACollectionArePairedByIdentity(t *testing.T) {
+	// One rule's port range widened. Reporting that as "this object left, this
+	// other object arrived" makes the reader diff two JSON blobs by eye.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"ingress": [
+	    {"name": "web",  "from_port": 80,  "to_port": 80},
+	    {"name": "ssh",  "from_port": 22,  "to_port": 22}
+	  ]},
+	  "after": {"ingress": [
+	    {"name": "ssh",  "from_port": 22,  "to_port": 22},
+	    {"name": "web",  "from_port": 80,  "to_port": 8080}
+	  ]}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 {
+		t.Fatalf("want the single edited field, got %d: %+v", len(attrs), attrs)
+	}
+	if got, want := attrs[0].Path, `ingress["web"].to_port`; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+	if attrs[0].Before != float64(80) || attrs[0].After != float64(8080) {
+		t.Errorf("values = %v -> %v", attrs[0].Before, attrs[0].After)
+	}
+}
+
+func TestUnpairableObjectsStayAsMembership(t *testing.T) {
+	// Nothing identifies these, so the honest report is what left and what
+	// arrived.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"rules": [{"from": 1, "to": 2}, {"from": 3, "to": 4}]},
+	  "after":  {"rules": [{"from": 3, "to": 4}, {"from": 5, "to": 6}]}
+	}`)
+
+	attrs := Diff(ch)
+	kinds := map[string]int{}
+	for _, a := range attrs {
+		kinds[a.Kind]++
+	}
+	if kinds[model.KindRemoved] != 1 || kinds[model.KindAdded] != 1 {
+		t.Errorf("want one removal and one addition, got %v (%+v)", kinds, attrs)
+	}
+}
+
+func TestIdentityMustBeUniqueToBeUsed(t *testing.T) {
+	// A repeated "name" is a label, not an identity; pairing on it would
+	// invent a correspondence that does not exist. Positions are then the
+	// honest reading, and they are what should appear.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"rules": [{"name": "x", "port": 1}, {"name": "x", "port": 2}]},
+	  "after":  {"rules": [{"name": "x", "port": 3}, {"name": "x", "port": 4}]}
+	}`)
+
+	for _, a := range Diff(ch) {
+		if strings.Contains(a.Path, `["x"]`) {
+			t.Errorf("paired on a name that identifies nothing: %+v", a)
+		}
+	}
+}
+
+func TestPairedObjectAndLeftoverTogether(t *testing.T) {
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"ingress": [{"name": "web", "port": 80}, {"name": "old", "port": 21}]},
+	  "after":  {"ingress": [{"name": "web", "port": 8080}, {"name": "new", "port": 22}]}
+	}`)
+
+	var edited, removed, added int
+	for _, a := range Diff(ch) {
+		switch a.Kind {
+		case model.KindRemoved:
+			removed++
+		case model.KindAdded:
+			added++
+		default:
+			edited++
+			if a.Path != `ingress["web"].port` {
+				t.Errorf("unexpected edited path %q", a.Path)
+			}
+		}
+	}
+	if edited != 1 || removed != 1 || added != 1 {
+		t.Errorf("want one edit, one removal and one addition; got %d/%d/%d", edited, removed, added)
 	}
 }

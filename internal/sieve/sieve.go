@@ -136,7 +136,10 @@ type Report struct {
 	HiddenAttrs     int
 	// Normalized counts differences dropped by the normalize rules, kept apart
 	// from rule-hidden attributes because the reason is different.
-	Normalized   int
+	Normalized int
+	// ExpiredRules names suppressions that have lapsed and are no longer
+	// hiding anything.
+	ExpiredRules []string
 	RuleStats    []RuleStat
 	Explanations []Explanation
 
@@ -156,8 +159,18 @@ func (r Report) HasChanges() bool { return r.Kept.Total() > 0 }
 
 // Apply runs the sieve over a whole run.
 func Apply(run model.Run, cfg *config.Config) *Report {
+	return ApplyAt(run, cfg, time.Now())
+}
+
+// ApplyAt is Apply with the clock supplied, so rule expiry can be tested.
+func ApplyAt(run model.Run, cfg *config.Config, now time.Time) *Report {
 	rep := &Report{Outputs: map[string][]model.AttrChange{}, Raw: run.Counts()}
 	ruleIdx := map[string]*RuleStat{}
+	for i, rule := range cfg.Ignore {
+		if rule.Expired(now) {
+			rep.ExpiredRules = append(rep.ExpiredRules, rule.Label(i))
+		}
+	}
 
 	hideDrift := cfg.Hide.Drift != nil && *cfg.Hide.Drift
 	hideOutputs := cfg.Hide.Outputs != nil && *cfg.Hide.Outputs
@@ -186,13 +199,16 @@ func Apply(run model.Run, cfg *config.Config) *Report {
 			if gone {
 				continue
 			}
-			r, dropped := sieveResource(res, cfg, rep, ruleIdx)
+			r, dropped := sieveResource(res, cfg, rep, ruleIdx, now)
 			if dropped {
 				rep.HiddenResources++
 				continue
 			}
 			kept = append(kept, r)
 			rep.Kept.Add(r.Action, r.Drift)
+			if r.Drift && !r.DriftReverted {
+				rep.Kept.DriftLeft++
+			}
 			unitKept++
 		}
 		if !hideOutputs && len(u.Outputs) > 0 {
@@ -305,7 +321,7 @@ func emptyish(v any) bool {
 
 // sieveResource strips ignored attributes and reports whether the whole
 // resource should disappear.
-func sieveResource(res model.Resource, cfg *config.Config, rep *Report, stats map[string]*RuleStat) (model.Resource, bool) {
+func sieveResource(res model.Resource, cfg *config.Config, rep *Report, stats map[string]*RuleStat, now time.Time) (model.Resource, bool) {
 	if cfg.NeverHide.Matches(string(res.Action), res.Type) {
 		return res, false
 	}
@@ -315,6 +331,9 @@ func sieveResource(res model.Resource, cfg *config.Config, rep *Report, stats ma
 
 	matched := make([]int, 0, len(cfg.Ignore))
 	for i, rule := range cfg.Ignore {
+		if rule.Expired(now) {
+			continue
+		}
 		if rule.MatchesResource(res.Unit, res.Type, res.Address, string(res.Action)) {
 			matched = append(matched, i)
 		}
@@ -389,6 +408,9 @@ func collapse(res []model.Resource, cfg *config.Config) []Group {
 		key.WriteByte(0)
 		if r.Drift {
 			key.WriteString("drift")
+			if r.DriftReverted {
+				key.WriteString("-reverted")
+			}
 		}
 		key.WriteByte(0)
 		key.WriteString(r.Module + "|" + r.Type + "|" + r.Name)

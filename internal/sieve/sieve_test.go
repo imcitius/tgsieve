@@ -2,6 +2,7 @@ package sieve
 
 import (
 	"testing"
+	"time"
 
 	"github.com/imcitius/tgsieve/internal/config"
 	"github.com/imcitius/tgsieve/internal/model"
@@ -340,5 +341,75 @@ func TestSeverityOnlyCountsSurvivingChanges(t *testing.T) {
 	rep := Apply(run, cfg)
 	if rep.AtLeast("low") {
 		t.Errorf("a change removed by the sieve must not fail a pipeline: %v", rep.SeverityCounts)
+	}
+}
+
+func TestExpiredRuleStopsHidingAndSaysSo(t *testing.T) {
+	cfg := config.Default()
+	cfg.Ignore = []config.Rule{
+		{Name: "temporary", Attrs: []string{"size"}, Expires: "2026-01-01"},
+		{Name: "permanent", Attrs: []string{"colour"}},
+	}
+	if err := config.Compile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	run := model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{
+		res("a", "aws_x.y", "aws_x", "y", model.ActionUpdate,
+			attr("size", "s", "l"), attr("colour", "red", "blue")),
+	}}}}
+
+	// Before the date both rules apply, which between them hide everything the
+	// resource had to say — so the resource itself drops out.
+	early := ApplyAt(run, cfg, time.Date(2025, 12, 31, 12, 0, 0, 0, time.UTC))
+	if len(early.Groups) != 0 || early.HiddenResources != 1 {
+		t.Errorf("both rules should still apply: %d groups, %d hidden resources",
+			len(early.Groups), early.HiddenResources)
+	}
+	if len(early.ExpiredRules) != 0 {
+		t.Errorf("nothing has expired yet: %v", early.ExpiredRules)
+	}
+
+	// After it, the rule fails open: the change comes back, and the report
+	// says which suppression lapsed.
+	late := ApplyAt(run, cfg, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if len(late.Groups) != 1 || len(late.Groups[0].Sample.Attrs) != 1 {
+		t.Fatalf("the expired rule should stop hiding: %+v", late.Groups)
+	}
+	if late.Groups[0].Sample.Attrs[0].Path != "size" {
+		t.Errorf("wrong attribute came back: %+v", late.Groups[0].Sample.Attrs)
+	}
+	if len(late.ExpiredRules) != 1 || late.ExpiredRules[0] != "temporary" {
+		t.Errorf("ExpiredRules = %v", late.ExpiredRules)
+	}
+}
+
+func TestExpiryIsInclusiveOfItsLastDay(t *testing.T) {
+	cfg := config.Default()
+	cfg.Ignore = []config.Rule{{Name: "r", Attrs: []string{"size"}, Expires: "2026-03-15"}}
+	if err := config.Compile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Ignore[0].Expired(time.Date(2026, 3, 15, 23, 59, 0, 0, time.UTC)) {
+		t.Error("a rule expiring on the 15th still applies during the 15th")
+	}
+	if !cfg.Ignore[0].Expired(time.Date(2026, 3, 16, 0, 1, 0, 0, time.UTC)) {
+		t.Error("it should be gone the next day")
+	}
+}
+
+func TestDriftSeparatesRevertedFromLeft(t *testing.T) {
+	reverted := res("a", "aws_x.a", "aws_x", "a", model.ActionUpdate, attr("size", "s", "l"))
+	reverted.Drift, reverted.DriftReverted = true, true
+	left := res("a", "aws_x.b", "aws_x", "b", model.ActionUpdate, attr("size", "s", "l"))
+	left.Drift = true
+
+	rep := Apply(model.Run{Units: []model.Unit{{Path: "a", Resources: []model.Resource{reverted, left}}}},
+		config.Default())
+
+	if rep.Kept.Drift != 2 || rep.Kept.DriftLeft != 1 {
+		t.Errorf("counts = %+v, want 2 drift of which 1 unaddressed", rep.Kept)
+	}
+	if len(rep.Groups) != 2 {
+		t.Fatalf("the two kinds of drift must not collapse together: %d groups", len(rep.Groups))
 	}
 }

@@ -119,11 +119,13 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 		}
 	}
 
-	var danger, updates, creates, drift []sieve.Group
+	var danger, updates, creates, drift, driftLeft []sieve.Group
 	for _, g := range rep.Groups {
 		switch {
-		case g.Drift:
+		case g.Drift && g.Sample.DriftReverted:
 			drift = append(drift, g)
+		case g.Drift:
+			driftLeft = append(driftLeft, g)
 		case g.Action == model.ActionReplace, g.Action == model.ActionDelete:
 			danger = append(danger, g)
 		case g.Action == model.ActionUpdate:
@@ -136,7 +138,8 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 	section(w, p, opts, "DESTROY / REPLACE", danger, true)
 	section(w, p, opts, "UPDATE", updates, true)
 	section(w, p, opts, "CREATE", creates, opts.Verbose)
-	section(w, p, opts, "DRIFT (changed outside terraform)", drift, true)
+	section(w, p, opts, "DRIFT — this plan puts it back", drift, true)
+	section(w, p, opts, "DRIFT — this plan leaves it", driftLeft, true)
 
 	if len(rep.Outputs) > 0 {
 		n := 0
@@ -387,7 +390,11 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 		parts = append(parts, p.green(fmt.Sprintf("+%d create", k.Create)))
 	}
 	if k.Drift > 0 {
-		parts = append(parts, p.cyan(fmt.Sprintf("!%d drift", k.Drift)))
+		label := fmt.Sprintf("!%d drift", k.Drift)
+		if k.DriftLeft > 0 {
+			label += fmt.Sprintf(" (%d not addressed)", k.DriftLeft)
+		}
+		parts = append(parts, p.cyan(label))
 	}
 	if len(parts) == 0 {
 		parts = append(parts, p.green("no changes"))
@@ -421,6 +428,10 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 			slowest.Path, slowest.Duration.Round(time.Millisecond))))
 	}
 
+	if n := len(rep.ExpiredRules); n > 0 {
+		fmt.Fprintf(w, "  %s\n", p.yellow(fmt.Sprintf("%s expired and no longer hide anything: %s",
+			plural(n, "rule"), strings.Join(rep.ExpiredRules, "; "))))
+	}
 	if rep.Normalized > 0 {
 		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("normalized: %s treated as no change (normalize rules)",
 			plural(rep.Normalized, "difference"))))

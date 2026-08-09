@@ -156,9 +156,19 @@ func (d *differ) walkSlice(path string, before, after []any) {
 	}
 
 	removed, added := multisetDiff(before, after)
-	if !preferMembership(before, after, len(removed)+len(added)) {
+
+	// Objects that are clearly the same thing — one security group rule, one
+	// subnet — are paired up and compared field by field. This takes
+	// precedence over the positional reading: when elements carry an identity,
+	// position is an implementation detail, and "the second rule was renamed"
+	// is a story about indices rather than about infrastructure.
+	pairs, removed, added := pairByIdentity(removed, added)
+	if len(pairs) == 0 && !preferMembership(before, after, len(removed)+len(added)) {
 		d.walkByIndex(path, before, after)
 		return
+	}
+	for _, pr := range pairs {
+		d.walk(JoinIdentity(path, pr.id), pr.before, pr.after)
 	}
 	for _, v := range removed {
 		d.emit(model.AttrChange{Path: path, Before: v, Kind: model.KindRemoved})
@@ -166,6 +176,126 @@ func (d *differ) walkSlice(path string, before, after []any) {
 	for _, v := range added {
 		d.emit(model.AttrChange{Path: path, After: v, Kind: model.KindAdded})
 	}
+}
+
+// identityKeys are the fields, in order of preference, that name an object
+// within a collection.
+var identityKeys = []string{"id", "name", "key", "cidr_block", "cidr", "address", "path", "domain_name", "arn"}
+
+type identityPair struct {
+	id            string
+	before, after any
+}
+
+// pairByIdentity matches removed and added objects that share an identity
+// field, returning the pairs and whatever stayed unmatched.
+func pairByIdentity(removed, added []any) ([]identityPair, []any, []any) {
+	field := commonIdentity(removed, added)
+	if field == "" {
+		return nil, removed, added
+	}
+	index := map[string]int{}
+	for i, v := range added {
+		id, ok := identityValue(v, field)
+		if !ok {
+			continue
+		}
+		if _, clash := index[id]; clash {
+			// Not an identity if it repeats.
+			return nil, removed, added
+		}
+		index[id] = i
+	}
+
+	var pairs []identityPair
+	usedAdded := map[int]bool{}
+	var leftoverRemoved []any
+	for _, v := range removed {
+		id, ok := identityValue(v, field)
+		if !ok {
+			leftoverRemoved = append(leftoverRemoved, v)
+			continue
+		}
+		j, found := index[id]
+		if !found || usedAdded[j] {
+			leftoverRemoved = append(leftoverRemoved, v)
+			continue
+		}
+		usedAdded[j] = true
+		pairs = append(pairs, identityPair{id: id, before: v, after: added[j]})
+	}
+	var leftoverAdded []any
+	for i, v := range added {
+		if !usedAdded[i] {
+			leftoverAdded = append(leftoverAdded, v)
+		}
+	}
+	if len(pairs) == 0 {
+		return nil, removed, added
+	}
+	return pairs, leftoverRemoved, leftoverAdded
+}
+
+// commonIdentity finds a field every object on both sides carries, and which
+// is unique among the objects that left.
+func commonIdentity(removed, added []any) string {
+	if len(removed) == 0 || len(added) == 0 {
+		return ""
+	}
+	for _, field := range identityKeys {
+		if !allHave(removed, field) || !allHave(added, field) {
+			continue
+		}
+		if !unique(removed, field) || !unique(added, field) {
+			continue
+		}
+		return field
+	}
+	return ""
+}
+
+func allHave(vs []any, field string) bool {
+	for _, v := range vs {
+		if _, ok := identityValue(v, field); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func unique(vs []any, field string) bool {
+	seen := map[string]bool{}
+	for _, v := range vs {
+		id, ok := identityValue(v, field)
+		if !ok || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
+// identityValue reads an identity field, accepting only scalars that actually
+// identify something.
+func identityValue(v any, field string) (string, bool) {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	raw, ok := obj[field]
+	if !ok {
+		return "", false
+	}
+	switch t := raw.(type) {
+	case string:
+		if t == "" {
+			return "", false
+		}
+		return t, true
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	}
+	return "", false
 }
 
 func (d *differ) walkByIndex(path string, before, after []any) {
@@ -302,7 +432,7 @@ func preferMembership(before, after []any, memberChanges int) bool {
 	if len(before) != len(after) {
 		return !isPrefix(before, after) && !isPrefix(after, before)
 	}
-	return memberChanges < positionalDiffs(before, after)
+	return memberChanges < positionalLeafDiffs(before, after)
 }
 
 // isPrefix reports whether the shorter array is the start of the longer one.
@@ -318,20 +448,51 @@ func isPrefix(short, long []any) bool {
 	return true
 }
 
-// positionalDiffs counts the indices that do not match, which is roughly how
-// many lines an index-by-index report would produce.
-func positionalDiffs(before, after []any) int {
+// positionalLeafDiffs counts the lines an index-by-index report would produce.
+// Comparing indices alone understates it: two objects that merely swapped
+// places differ in every field, and each of those fields is a line.
+func positionalLeafDiffs(before, after []any) int {
 	n := len(before)
 	if len(after) > n {
 		n = len(after)
 	}
 	count := 0
 	for i := 0; i < n; i++ {
-		if !equalValue(at(before, i), at(after, i)) {
-			count++
-		}
+		count += leafDiffs(at(before, i), at(after, i))
 	}
 	return count
+}
+
+func leafDiffs(before, after any) int {
+	if equalValue(before, after) {
+		return 0
+	}
+	switch b := before.(type) {
+	case map[string]any:
+		a, ok := asMap(after)
+		if !ok {
+			return 1
+		}
+		seen := map[string]bool{}
+		count := 0
+		for k, v := range b {
+			seen[k] = true
+			count += leafDiffs(v, a[k])
+		}
+		for k, v := range a {
+			if !seen[k] {
+				count += leafDiffs(nil, v)
+			}
+		}
+		return count
+	case []any:
+		a, ok := asSlice(after)
+		if !ok {
+			return 1
+		}
+		return positionalLeafDiffs(b, a)
+	}
+	return 1
 }
 
 // truePaths collects every path in a terraform "mask" structure

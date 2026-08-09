@@ -47,6 +47,17 @@ func JoinKey(prefix, key string) string {
 	return prefix + "." + key
 }
 
+// JoinIdentity appends a collection member named by an identity field rather
+// than by position. It always brackets, so ingress["web"] reads as "the member
+// called web" and cannot be confused with a field named web.
+func JoinIdentity(prefix, id string) string {
+	quoted, err := json.Marshal(id)
+	if err != nil {
+		quoted = []byte(`"` + id + `"`)
+	}
+	return prefix + "[" + string(quoted) + "]"
+}
+
 // JoinIndex appends a list index to a path.
 func JoinIndex(prefix string, i int) string {
 	if prefix == "" {

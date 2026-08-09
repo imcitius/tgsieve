@@ -107,7 +107,10 @@ type Resource struct {
 	Action      Action       `json:"action"`
 	Attrs       []AttrChange `json:"attrs,omitempty"`
 	Drift       bool         `json:"drift,omitempty"`
-	Imported    bool         `json:"imported,omitempty"`
+	// DriftReverted marks drift the plan will undo. Drift the plan does not
+	// address is the kind that survives an apply, and is worth separating.
+	DriftReverted bool `json:"drift_reverted,omitempty"`
+	Imported      bool `json:"imported,omitempty"`
 
 	Hidden []HiddenAttr `json:"hidden,omitempty"`
 }
@@ -172,7 +175,9 @@ type Counts struct {
 	Delete  int `json:"delete"`
 	Replace int `json:"replace"`
 	Drift   int `json:"drift"`
-	NoOp    int `json:"no_op"`
+	// DriftLeft counts drift this plan will not put back.
+	DriftLeft int `json:"drift_left"`
+	NoOp      int `json:"no_op"`
 }
 
 func (c Counts) Total() int { return c.Create + c.Update + c.Delete + c.Replace }

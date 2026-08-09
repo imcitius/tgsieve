@@ -45,18 +45,22 @@ Done: arrays are compared by membership rather than position (a reordered set
 is one line, an element leaving the middle no longer shifts every index into a
 false change), a `normalize:` block for empty-versus-null and reorderings,
 quoted path segments for keys containing dots (and attribute globs that cover
-both spellings), built-in rule presets via `extends`, and `--fail-on` backed by
-per-action severity.
+both spellings), built-in rule presets via `extends`, `--fail-on` backed by
+per-action severity, per-rule `expires` that fails open and says so, drift
+split by whether the plan addresses it, and identity-matched objects inside
+collections.
+
+Note on coverage: the "this plan leaves it" drift branch is unit-tested but has
+never been seen on a real plan here, because no provider available offline
+produces that shape — `local_file` keys on its content hash, so editing a file
+reads as the resource being gone rather than as an ignored attribute. Worth
+confirming against a cloud provider with `ignore_changes` before trusting the
+wording.
 
 
-- **Per-rule expiry.** `expires: 2026-12-01` on a rule, warn once it lapses, so
-  "temporary" suppressions do not become permanent blindness.
-- **Drift section polish.** Separate "drift that the plan will revert" from
-  "drift the plan ignores"; the second is what actually bites.
-- **Structural identity for object members.** Membership is compared by exact
-  equality, so an object in a set that had one field edited reads as one
-  removal plus one addition rather than an edit. Matching on an identity field
-  (`id`, `name`, `cidr_block`) would pair them up.
+- **Identity fields are a fixed list.** `id`, `name`, `key`, `cidr_block` and
+  friends cover common shapes, but a collection keyed by something else falls
+  back to membership. A per-type identity hint in config would generalize it.
 - **Preset drift.** Presets are a fixed list compiled into the binary. A
   project that wants one changed has to fork it; `extends` accepting a path or
   URL would help, but turns "what is hidden" into something fetched at runtime.

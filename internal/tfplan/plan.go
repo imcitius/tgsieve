@@ -77,8 +77,17 @@ func ToUnit(unitPath string, p *Plan) model.Unit {
 			u.Resources = append(u.Resources, r)
 		}
 	}
+	// Drift the plan will put back is a different problem from drift it leaves
+	// alone: the second survives the apply.
+	planned := make(map[string]bool, len(p.ResourceChanges))
+	for _, rc := range p.ResourceChanges {
+		if actionOf(rc.Change.Actions) != model.ActionNoOp {
+			planned[rc.Address] = true
+		}
+	}
 	for _, rc := range p.ResourceDrift {
 		if r, ok := toResource(unitPath, rc, true); ok {
+			r.DriftReverted = planned[rc.Address]
 			u.Resources = append(u.Resources, r)
 		}
 	}

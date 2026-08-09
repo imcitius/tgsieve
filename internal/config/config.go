@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -47,10 +48,26 @@ type Rule struct {
 	Address string   `yaml:"address"`
 	Actions []string `yaml:"actions"`
 	Attrs   []string `yaml:"attrs"`
+	// Expires ends a suppression on a date (YYYY-MM-DD). Past it the rule
+	// stops hiding and says so, so "just until we fix it" cannot quietly
+	// become permanent blindness.
+	Expires string `yaml:"expires"`
 
+	expiresAt              time.Time
 	unitRe, typeRe, addrRe *regexp.Regexp
 	attrRes                []*regexp.Regexp
 }
+
+// ExpiryDate is the format accepted for rule expiry.
+const ExpiryDate = "2006-01-02"
+
+// Expired reports whether the rule has lapsed, and when it did.
+func (r Rule) Expired(now time.Time) bool {
+	return !r.expiresAt.IsZero() && now.After(r.expiresAt)
+}
+
+// ExpiresAt returns the parsed expiry, zero when the rule has none.
+func (r Rule) ExpiresAt() time.Time { return r.expiresAt }
 
 // NeverHide is the safety net: matching resources bypass every ignore rule.
 //
@@ -324,6 +341,14 @@ func (c *Config) compile() error {
 		r := &c.Ignore[i]
 		if len(r.Attrs) == 0 {
 			return fmt.Errorf("ignore rule %q: 'attrs' is required (use attrs: [\"*\"] to drop the whole resource)", r.Label(i))
+		}
+		if r.Expires != "" {
+			t, err := time.Parse(ExpiryDate, r.Expires)
+			if err != nil {
+				return fmt.Errorf("ignore rule %q expires: want a date like 2026-12-01, got %q", r.Label(i), r.Expires)
+			}
+			// A rule expires at the end of the day it names.
+			r.expiresAt = t.Add(24*time.Hour - time.Nanosecond)
 		}
 		var err error
 		if r.unitRe, err = compileGlob(r.Unit); err != nil {
