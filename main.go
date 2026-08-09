@@ -31,6 +31,7 @@ const (
 	exitToolError = 1 // tgsieve itself could not do its job
 	exitChanges   = 2 // --detailed-exitcode: changes survived the sieve
 	exitUnitsFail = 3 // one or more units failed to plan
+	exitAborted   = 2 // apply: the user said no, nothing was changed
 	exitInterrupt = 130
 )
 
@@ -57,6 +58,7 @@ const usage = `tgsieve — terragrunt plans without the wall of text
 
 Usage:
   tgsieve plan [flags] [-- <tofu/terraform args>]   run a plan and show real changes
+  tgsieve apply [flags]                             plan, show, ask, then apply exactly that
   tgsieve show <plan-dir> [flags]                   re-render plans saved earlier
   tgsieve rules [flags]                             print the effective sieve config
   tgsieve presets [name]                            list the built-in rule sets, or show one
@@ -67,7 +69,8 @@ The stack is never planned implicitly: without --all only the unit in the
 working directory runs.
 
 Exit codes: 0 fine · 1 tgsieve failed · 2 changes survived the sieve
-(--detailed-exitcode) · 3 a unit failed to plan · 130 interrupted.
+(--detailed-exitcode), or an apply was declined · 3 a unit failed · 130
+interrupted.
 
 Examples:
   tgsieve plan                                  # this unit only
@@ -89,6 +92,8 @@ func main() {
 	switch os.Args[1] {
 	case "plan":
 		code, err = cmdPlan(os.Args[2:])
+	case "apply":
+		code, err = cmdApply(os.Args[2:])
 	case "show":
 		code, err = cmdShow(os.Args[2:])
 	case "rules":
@@ -282,7 +287,7 @@ func cmdPlan(args []string) (int, error) {
 
 	reused := 0
 	if *resume {
-		if err := checkGeneration(*keepPlans, now, *force); err != nil {
+		if err := checkGeneration(*keepPlans, now, *force, "re-run without --resume to plan the stack fresh"); err != nil {
 			return exitToolError, err
 		}
 		done, missing, err := resumeSplit(ctx, opts, *keepPlans)
@@ -376,14 +381,14 @@ func refreshDisabled(args []string) bool {
 // checkGeneration refuses to mix plans from one state of the code with a run
 // against another. A stale plan that still renders is the worst outcome here:
 // it looks exactly like a fresh one.
-func checkGeneration(dir string, now runner.Provenance, force bool) error {
+func checkGeneration(dir string, now runner.Provenance, force bool, retry string) error {
 	was, err := runner.ReadProvenance(dir)
 	if err != nil {
 		if force {
 			fmt.Fprintf(os.Stderr, "warning: %v (continuing because --force)\n", err)
 			return nil
 		}
-		return fmt.Errorf("%w\n  re-run without --resume, or pass --force to reuse them anyway", err)
+		return fmt.Errorf("%w\n  %s, or pass --force to reuse them anyway", err, retry)
 	}
 	if was.SameGeneration(now) {
 		return nil
@@ -402,7 +407,7 @@ func checkGeneration(dir string, now runner.Provenance, force bool) error {
 		fmt.Fprintf(os.Stderr, "warning: %s (continuing because --force)\n", msg)
 		return nil
 	}
-	return fmt.Errorf("%s\n  re-run without --resume to plan the stack fresh, or pass --force to mix generations", msg)
+	return fmt.Errorf("%s\n  %s, or pass --force to mix generations", msg, retry)
 }
 
 // resumeSplit compares the units the run would cover with the plans already

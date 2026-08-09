@@ -21,6 +21,8 @@ type Progress struct {
 	tty     bool
 	verbose bool
 	Color   bool
+	// Verb names what the run is doing, for the status line.
+	Verb string
 
 	mu        sync.Mutex
 	units     map[string]bool
@@ -61,7 +63,7 @@ func (p *Progress) SetTotal(n int) {
 
 func NewProgress(w io.Writer, tty, verbose bool) *Progress {
 	now := time.Now()
-	return &Progress{w: w, tty: tty, verbose: verbose, units: map[string]bool{}, start: now, lastBeat: now}
+	return &Progress{w: w, tty: tty, verbose: verbose, Verb: "planning", units: map[string]bool{}, start: now, lastBeat: now}
 }
 
 func (p *Progress) Unit(dir string) {
@@ -147,6 +149,14 @@ func (p *Progress) Done() {
 	p.clear()
 }
 
+// verb is what to call what is happening. Caller holds the lock.
+func (p *Progress) verb() string {
+	if p.Verb == "" {
+		return "planning"
+	}
+	return p.Verb
+}
+
 // beat prints a plain liveness line for logs that cannot show a spinner.
 func (p *Progress) beat() {
 	p.mu.Lock()
@@ -155,8 +165,8 @@ func (p *Progress) beat() {
 		return
 	}
 	p.lastBeat = time.Now()
-	line := fmt.Sprintf("… %s · %d units seen · %s elapsed",
-		p.progressLabel(), len(p.units), time.Since(p.start).Truncate(time.Second))
+	line := fmt.Sprintf("… %s · %s · %d units seen · %s elapsed",
+		p.verb(), p.progressLabel(), len(p.units), time.Since(p.start).Truncate(time.Second))
 	if p.errors > 0 {
 		line += fmt.Sprintf(" · %d failed", p.errors)
 	}
@@ -208,8 +218,8 @@ func (p *Progress) draw() {
 		return
 	}
 	s := string(spinner[p.frame%len(spinner)])
-	line := fmt.Sprintf("%s planning · %s · %s",
-		s, p.progressLabel(), time.Since(p.start).Truncate(time.Second))
+	line := fmt.Sprintf("%s %s · %s · %s",
+		s, p.verb(), p.progressLabel(), time.Since(p.start).Truncate(time.Second))
 	if p.errors > 0 {
 		line += fmt.Sprintf(" · %s", p.red(fmt.Sprintf("%d failed", p.errors)))
 	}

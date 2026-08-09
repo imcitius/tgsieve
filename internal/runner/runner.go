@@ -202,10 +202,14 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 // --json-out-dir for us.
 func runStack(ctx context.Context, opts Options, planDir, reportFile string, res *Result) error {
 	args := []string{"run", "--all",
-		"--json-out-dir", planDir,
 		"--report-file", reportFile,
 		"--report-format", "json",
 		"--summary-disable",
+	}
+	if opts.Command == "plan" {
+		// --json-out-dir is a plan-time artifact; apply reads the binary plans
+		// from --out-dir instead.
+		args = append(args, "--json-out-dir", planDir)
 	}
 	if opts.OutDir != "" {
 		args = append(args, "--out-dir", opts.OutDir)
@@ -224,6 +228,9 @@ func runStack(ctx context.Context, opts Options, planDir, reportFile string, res
 // --all runs, so here we drive it ourselves: plan to a binary file, then ask
 // terragrunt to render that file as JSON.
 func runUnit(ctx context.Context, opts Options, planDir, reportFile string, res *Result) error {
+	if opts.Command == "apply" {
+		return applyUnit(ctx, opts, reportFile, res)
+	}
 	planFile, err := binaryPlanPath(opts)
 	if err != nil {
 		return err
@@ -278,9 +285,39 @@ func hasJSONFlag(args []string) bool {
 	return false
 }
 
+// applyUnit applies the plan file saved for this unit, so a single-unit apply
+// carries the same guarantee as a stack one: what runs is what was reviewed.
+func applyUnit(ctx context.Context, opts Options, reportFile string, res *Result) error {
+	planFile, err := savedPlanPath(opts)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(planFile); err != nil {
+		return fmt.Errorf("no saved plan for this unit at %s", planFile)
+	}
+	args := []string{"run",
+		"--report-file", reportFile,
+		"--report-format", "json",
+		"--summary-disable",
+	}
+	args = append(args, opts.TerragruntArgs...)
+	args = append(args, "--", "apply", planFile)
+	return stream(ctx, opts, res, args)
+}
+
+// savedPlanPath is where a unit's binary plan lives, laid out the same way
+// terragrunt lays them out for a stack.
+func savedPlanPath(opts Options) (string, error) {
+	abs, err := filepath.Abs(opts.OutDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(abs, unitName(opts.Dir), "tfplan.tfplan"), nil
+}
+
 func binaryPlanPath(opts Options) (string, error) {
 	if opts.OutDir != "" {
-		abs, err := filepath.Abs(opts.OutDir)
+		abs, err := filepath.Abs(filepath.Join(opts.OutDir, unitName(opts.Dir)))
 		if err != nil {
 			return "", err
 		}

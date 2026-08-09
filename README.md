@@ -87,6 +87,7 @@ or from a checkout: `go build -o tgsieve .`
 ## Use
 
 ```bash
+tgsieve apply                                 # plan, show, ask, then apply exactly that
 tgsieve plan                                  # only the unit in the working directory
 tgsieve plan --all                            # the whole stack below the working directory
 tgsieve plan -C envs/prod --all -- -refresh=false   # args after -- go to terraform
@@ -97,9 +98,38 @@ tgsieve rules                                 # what config is in effect, and fr
 tgsieve init                                  # write a starter .tgsieve.yaml at the project root
 ```
 
-**The stack is never planned implicitly.** `--all` (`-a`) is opt-in, so a
-mistyped command touches one unit rather than the whole estate — the same
-default will hold for `apply` when it lands.
+**The stack is never planned implicitly.** `--all` (`-a`) is opt-in for both
+`plan` and `apply`, so a mistyped command touches one unit rather than the
+whole estate.
+
+## Applying
+
+`tgsieve apply` plans, shows the sieved report, asks, and then applies **the
+plan files it just showed you** — not a fresh plan made after you answered.
+Terragrunt honours saved plan files, so a configuration change between the
+question and the answer cannot slip into the apply.
+
+```
+apply 9 changes across 5 units? [yes/no] yes
+4 resources will be destroyed or replaced — type 'destroy' to confirm: destroy
+```
+
+The second question only appears when something will be destroyed or replaced,
+and it wants that word rather than another "yes" — those are the changes that
+running the tool again will not undo.
+
+Outside a terminal it refuses rather than assuming: `--auto-approve` is how you
+say you meant it in CI, and it still prints what is about to be destroyed.
+
+To review now and apply later, save the plans and hand them back:
+
+```bash
+tgsieve plan  --all --keep-plans ./plans --out-dir ./plans
+tgsieve apply --all --plans ./plans
+```
+
+Those plans carry the provenance described below, so an apply against code that
+has moved on is refused rather than applied.
 
 Useful flags: `-v` (attributes for creates and destroys too), `--show-empty`,
 `--explain`, `--timings` (slowest units), `--no-sieve`, `--no-color`,

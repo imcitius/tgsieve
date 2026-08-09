@@ -6,15 +6,28 @@ plan parsing with attribute-level diffs, noise rules, collapsing, tty renderer,
 
 ## Next up
 
-### `tgsieve apply` — apply exactly what was reviewed
-`plan --out-dir` already saves the binary plan per unit. Apply should feed those
-files back (`terragrunt run --all -- apply <unit>/tfplan.tfplan`), refuse to run
-if the working tree changed since the plan, and re-render the same sieved view
-as a confirmation prompt. This is the feature that makes the whole thing a
-workflow rather than a viewer.
+### Applying — shipped, with gaps
 
-`--all` must stay opt-in here as it is for `plan`, and an apply that would
-destroy or replace anything should require a second, explicit confirmation.
+`tgsieve apply` plans, renders, asks and applies the saved plan files, with
+`--plans` to apply a review from earlier and the generation guard refusing
+plans made against code that has since moved. `--all` stays opt-in, destroys
+and replacements need their own confirmation, and a run without a terminal
+refuses unless `--auto-approve` says otherwise.
+
+Still open there:
+
+- **No per-resource progress.** The status line counts units, so a single unit
+  creating forty things looks stalled. terraform's `-json` stream carries
+  apply events; a stack run cannot use it (the lines interleave unlabelled),
+  but a single-unit apply could.
+- **A failed apply reports units, not resources.** When a unit fails halfway,
+  the report still describes what was planned. What actually landed is only
+  discoverable by planning again.
+- **No output values after apply.** Terraform prints them; tgsieve currently
+  swallows them along with everything else.
+- **`--plans` does not verify the binary plans match the JSON ones** it renders
+  from. They are written by the same run today, so this is only a concern if
+  someone edits the directory.
 
 ### Baseline / diff-of-diffs
 Fingerprint the sieved report (`Resource.ValueShape` is already the primitive)
