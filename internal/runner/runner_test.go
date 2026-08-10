@@ -165,7 +165,7 @@ func TestHandleTFEventCountsProgressAndErrors(t *testing.T) {
 	if got := p.progressLabel(); got != "2 resources refreshed · 1 to change" {
 		t.Errorf("label = %q", got)
 	}
-	if len(res.Errors) != 1 || res.Errors[0] != "Invalid value: a number is required" {
+	if len(res.Errors) != 1 || res.Errors[0] != "Error: Invalid value: a number is required" {
 		t.Errorf("diagnostics not captured: %v", res.Errors)
 	}
 }
@@ -612,5 +612,33 @@ func TestTrackedTotalSurvivesTheQueueMeasurement(t *testing.T) {
 
 	if got := p.progressLabel(); got != "0/1 applied" {
 		t.Errorf("label = %q, want 0/1 applied", got)
+	}
+}
+
+func TestDirectBinaryPrefersWhatWasAskedFor(t *testing.T) {
+	if got := directBinary(Options{TFPath: "/opt/bin/tofu"}); got != "/opt/bin/tofu" {
+		t.Errorf("an explicit --tf-path wins: %q", got)
+	}
+
+	t.Setenv("TG_TF_PATH", "tofu")
+	if got := directBinary(Options{}); got != "tofu" {
+		t.Errorf("TG_TF_PATH should be honoured: %q", got)
+	}
+
+	// With neither, the engine name is the sensible default; whether the
+	// binary exists is the caller's problem to report.
+	t.Setenv("TG_TF_PATH", "")
+	got := directBinary(Options{})
+	if got != "terraform" && got != "tofu" {
+		t.Errorf("unexpected default binary %q", got)
+	}
+}
+
+func TestDirectOptionsAreRecognised(t *testing.T) {
+	if (Options{}).Direct() {
+		t.Error("terragrunt is the default engine")
+	}
+	if !(Options{Engine: EngineTerraform}).Direct() {
+		t.Error("the terraform engine should be recognised")
 	}
 }

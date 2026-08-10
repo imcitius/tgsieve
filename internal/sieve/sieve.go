@@ -160,8 +160,11 @@ type Report struct {
 	Wall time.Duration
 	// NoRefresh records that the plan was produced without refreshing state.
 	NoRefresh bool
-	// TFPath is the tofu/terraform binary terragrunt ran.
+	// TFPath is the tofu/terraform binary that ran.
 	TFPath string
+	// Direct records that terragrunt was not involved, which changes how the
+	// binary is described.
+	Direct bool
 	// Severity is the highest severity among the surviving changes, and
 	// SeverityCounts how many changes sit at each level.
 	Severity       string

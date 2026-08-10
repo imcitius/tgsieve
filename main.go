@@ -81,6 +81,7 @@ Examples:
   tgsieve plan -C envs/prod --all -- -refresh=false
   tgsieve plan --all --keep-plans ./plans --out-dir ./tfplans
   tgsieve show ./plans --explain
+  tgsieve plan --engine terraform               # a plain root module, no terragrunt
 `
 
 func main() {
@@ -137,6 +138,8 @@ type commonFlags struct {
 	noColor    bool
 	timings    bool
 	format     string
+	engine     string
+	initFirst  bool
 	maxBytes   int
 	maxAttrs   int
 	maxUnits   int
@@ -152,6 +155,8 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.noColor, "no-color", false, "disable color")
 	fs.BoolVar(&c.timings, "timings", false, "list the slowest units")
 	fs.StringVar(&c.format, "format", "tty", "output format: tty or md (markdown for a PR comment)")
+	fs.StringVar(&c.engine, "engine", "terragrunt", "what to drive: terragrunt, or terraform for a plain root module")
+	fs.BoolVar(&c.initFirst, "init", false, "run init before planning (terraform engine only)")
 	fs.IntVar(&c.maxBytes, "max-bytes", render.DefaultMaxBytes, "size limit for markdown output")
 	fs.IntVar(&c.maxAttrs, "max-attrs", 12, "max attributes shown per resource")
 	fs.IntVar(&c.maxUnits, "max-units", 6, "max unit names listed per collapsed group")
@@ -180,6 +185,43 @@ func (c *commonFlags) render(w io.Writer, rep *sieve.Report) {
 }
 
 func (c *commonFlags) markdown() bool { return c.format == "md" || c.format == "markdown" }
+
+// direct reports whether terragrunt is out of the picture.
+func (c *commonFlags) direct() bool {
+	return c.engine == runner.EngineTerraform || c.engine == "tofu" || c.engine == "tf"
+}
+
+func (c *commonFlags) engineName() string {
+	if c.direct() {
+		return runner.EngineTerraform
+	}
+	return ""
+}
+
+func (c *commonFlags) checkEngine() error {
+	switch c.engine {
+	case "", "terragrunt", "terraform", "tofu", "tf":
+		return nil
+	}
+	return fmt.Errorf("--engine: want terragrunt or terraform, got %q", c.engine)
+}
+
+// checkStackFlags rejects the flags that only mean something with a queue of
+// units behind them.
+func (c *commonFlags) checkStackFlags(all bool, filters []string, filterAffected bool, parallelism int) error {
+	if !c.direct() {
+		return nil
+	}
+	switch {
+	case all:
+		return fmt.Errorf("--all needs terragrunt: the terraform engine plans one root module")
+	case len(filters) > 0 || filterAffected:
+		return fmt.Errorf("--filter/--filter-affected select units from a terragrunt stack")
+	case parallelism > 0:
+		return fmt.Errorf("--parallelism paces a terragrunt stack; terraform paces itself inside one module")
+	}
+	return nil
+}
 
 func (c *commonFlags) checkFormat() error {
 	switch c.format {
@@ -235,6 +277,15 @@ func cmdPlan(args []string) (int, error) {
 	if err := cf.checkFormat(); err != nil {
 		return exitToolError, err
 	}
+	if err := cf.checkEngine(); err != nil {
+		return exitToolError, err
+	}
+	if err := cf.checkStackFlags(*all, filters, *filterAffected, *parallelism); err != nil {
+		return exitToolError, err
+	}
+	if *resume && cf.direct() {
+		return exitToolError, fmt.Errorf("--resume picks up the rest of a stack run; there is one module here")
+	}
 	cfg, err := cf.loadConfig()
 	if err != nil {
 		return exitToolError, err
@@ -285,6 +336,8 @@ func cmdPlan(args []string) (int, error) {
 		FilterAffected: *filterAffected,
 		Parallelism:    *parallelism,
 		NoResolveRefs:  *noResolveRefs,
+		Engine:         cf.engineName(),
+		Init:           cf.initFirst,
 		Progress:       prog,
 	}
 
@@ -353,6 +406,7 @@ func cmdPlan(args []string) (int, error) {
 	rep.Wall = res.Duration
 	rep.NoRefresh = refreshDisabled(tfArgs)
 	rep.TFPath = res.TFPath
+	rep.Direct = cf.direct()
 	cf.render(os.Stdout, rep)
 	if reused > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of the plans above were reused from a previous run\n", reused)

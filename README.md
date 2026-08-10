@@ -261,6 +261,30 @@ each differently:
 | `3` | one or more units failed to plan |
 | `130` | interrupted with Ctrl-C |
 
+## Plain terraform, no terragrunt
+
+A root module big enough to be unreadable has the same problem as a stack,
+minus the queue — so the sieve works there too:
+
+```bash
+tgsieve plan  --engine terraform          # a plain root module in this directory
+tgsieve plan  --engine terraform --init   # run init first
+tgsieve apply --engine terraform
+```
+
+It drives `terraform` directly (or `tofu` — `--tf-path` and `TG_TF_PATH` both
+apply, and whichever is installed is used by default), reads terraform's own
+`-json` event stream for progress, and renders the plan JSON through the same
+rules, collapsing and formats as everything else, including `--format md`.
+
+The flags that only mean something with a queue behind them — `--all`,
+`--filter`, `--filter-affected`, `--parallelism`, `--resume` — say so rather
+than being quietly ignored:
+
+```
+--all needs terragrunt: the terraform engine plans one root module
+```
+
 ## CI and pull requests
 
 `--format md` renders the same report as markdown for a pull request comment:

@@ -263,7 +263,11 @@ func mdFooter(rep *sieve.Report) string {
 		notes = append(notes, fmt.Sprintf("%s not run", plural(len(rep.SkippedUnits), "unit")))
 	}
 	if rep.TFPath != "" && len(rep.ErroredUnits) > 0 {
-		notes = append(notes, "terragrunt ran "+rep.TFPath)
+		if rep.Direct {
+			notes = append(notes, "ran "+rep.TFPath)
+		} else {
+			notes = append(notes, "terragrunt ran "+rep.TFPath)
+		}
 	}
 	if len(notes) == 0 {
 		return "<sub>tgsieve</sub>"

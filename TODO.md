@@ -64,6 +64,21 @@ Bubbletea: unit list → resource list → attribute diff, `/` to filter, `h` to
 toggle hidden attributes, `y` to yank an address. Only worth it once the static
 view stops being where the time goes.
 
+## Engines
+
+`--engine terraform` drives terraform or tofu directly for a single root
+module, with the same sieve, collapsing, formats and apply flow. Still open:
+
+- **Several root modules in one run.** The terragrunt engine has a queue; the
+  terraform one plans exactly one directory. Walking a tree of root modules
+  would need its own ordering and dependency story, which is most of what
+  terragrunt exists for.
+- **Workspaces.** `terraform workspace` is invisible to the report; two
+  workspaces of one module render identically.
+- **Provenance.** The generation guard fingerprints configuration and git, but
+  a direct run records no module sources, since there is no terragrunt config
+  to resolve them from.
+
 ## Sieve improvements
 
 Done: arrays are compared by membership rather than position (a reordered set

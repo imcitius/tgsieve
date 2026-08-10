@@ -41,6 +41,8 @@ type Options struct {
 	Parallelism    int      // --parallelism (--all only)
 	KnownUnits     []string // queue already discovered by the caller
 	NoResolveRefs  bool     // skip resolving git refs to commits (offline)
+	Engine         string   // "" for terragrunt, "terraform" to drive it directly
+	Init           bool     // run init first (direct engine only)
 	Progress       *Progress
 	Stderr         io.Writer
 }
@@ -103,6 +105,10 @@ type reportEntry struct {
 }
 
 type Result struct {
+	// durations records how long each unit took when no run report exists,
+	// which is the case when terragrunt is not involved.
+	durations map[string]time.Duration
+
 	// TFPath is the binary terragrunt actually used, as terragrunt reported
 	// it. Which binary ran is the first thing worth knowing when a whole stack
 	// fails to initialize, and nothing else in the output says it.
@@ -166,9 +172,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		stop = opts.Progress.Watch(planDir)
 	}
 	var runErr error
-	if opts.All {
+	switch {
+	case opts.Direct():
+		runErr = runDirect(ctx, opts, planDir, res)
+	case opts.All:
 		runErr = runStack(ctx, opts, planDir, reportFile, res)
-	} else {
+	default:
 		runErr = runUnit(ctx, opts, planDir, reportFile, res)
 	}
 	if stop != nil {
@@ -181,13 +190,35 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return res, runErr
 	}
 
+	if opts.Direct() && opts.Command == "apply" {
+		// A direct apply has no plan document to collect; the run itself is
+		// the whole story.
+		res.Run.WorkingDir = opts.Dir
+		res.Run.Command = opts.Command
+		return res, nil
+	}
+
 	run, err := Collect(planDir)
 	if err != nil {
 		return res, err
 	}
 	run.WorkingDir = opts.Dir
 	run.Command = opts.Command
-	applyReport(&run, reportFile, res.Errors, opts.All)
+	if opts.Direct() {
+		for i := range run.Units {
+			if d, ok := res.durations[run.Units[i].Path]; ok {
+				run.Units[i].Duration = d
+			}
+		}
+		if len(run.Units) == 0 && (res.ExitCode != 0 || len(res.Errors) > 0) {
+			run.Units = []model.Unit{{
+				Path: unitName(opts.Dir), Errored: true,
+				Error: firstErrorFor(unitName(opts.Dir), res.Errors),
+			}}
+		}
+	} else {
+		applyReport(&run, reportFile, res.Errors, opts.All)
+	}
 	if !opts.All {
 		ensureUnit(&run, opts, res)
 	}
@@ -459,8 +490,13 @@ func output(ctx context.Context, opts Options, args []string) ([]byte, error) {
 // display, recording errors as they happen.
 func stream(ctx context.Context, opts Options, res *Result, args []string) error {
 	args = append([]string{args[0], "--log-format", "json"}, args[1:]...)
-	cmd := newCmd(ctx, opts, args)
+	return streamCmd(ctx, opts, res, newCmd(ctx, opts, args), false)
+}
 
+// streamCmd runs a command and feeds its output to the progress display.
+// direct says the output is terraform's own -json event stream rather than
+// terragrunt log records.
+func streamCmd(ctx context.Context, opts Options, res *Result, cmd *exec.Cmd, direct bool) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -482,6 +518,15 @@ func stream(ctx context.Context, opts Options, res *Result, args []string) error
 		for sc.Scan() {
 			line := sc.Text()
 			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if direct {
+				mu.Lock()
+				handled := handleTFEvent(line, opts, res)
+				mu.Unlock()
+				if !handled && opts.Progress != nil {
+					opts.Progress.Raw(line)
+				}
 				continue
 			}
 			var ll LogLine
@@ -689,9 +734,13 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 		if opts.Progress != nil {
 			opts.Progress.PlannedResource()
 		}
+	case "apply_complete":
+		if opts.Progress != nil {
+			opts.Progress.PlannedResource()
+		}
 	case "diagnostic":
 		if ev.Diagnostic.Severity == "error" {
-			msg := strings.TrimSpace(ev.Diagnostic.Summary + ": " + ev.Diagnostic.Detail)
+			msg := "Error: " + strings.TrimSpace(ev.Diagnostic.Summary+": "+ev.Diagnostic.Detail)
 			res.Errors = append(res.Errors, msg)
 			if opts.Progress != nil {
 				opts.Progress.Error(textutil.Headline(msg))

@@ -50,6 +50,12 @@ func cmdApply(args []string) (int, error) {
 	if (len(filters) > 0 || *filterAffected) && !*all {
 		return exitToolError, fmt.Errorf("--filter/--filter-affected select units from a stack: add --all")
 	}
+	if err := cf.checkEngine(); err != nil {
+		return exitToolError, err
+	}
+	if err := cf.checkStackFlags(*all, filters, *filterAffected, *parallelism); err != nil {
+		return exitToolError, err
+	}
 	if *parallelism > 0 && !*all {
 		return exitToolError, fmt.Errorf("--parallelism paces a stack run: add --all")
 	}
@@ -78,6 +84,8 @@ func cmdApply(args []string) (int, error) {
 		Filters:        filters,
 		FilterAffected: *filterAffected,
 		Parallelism:    *parallelism,
+		Engine:         cf.engineName(),
+		Init:           cf.initFirst,
 		Progress:       prog,
 	}
 
@@ -163,6 +171,7 @@ func cmdApply(args []string) (int, error) {
 	outcome := sieve.Apply(res.Run, cfg)
 	outcome.Wall = res.Duration
 	outcome.TFPath = res.TFPath
+	outcome.Direct = cf.direct()
 	renderOutcome(os.Stdout, rep, outcome, res, cf.renderOpts())
 
 	if res.Interrupted {
