@@ -72,7 +72,7 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 		}
 	}
 
-	var danger, updates, creates, drift, driftLeft []sieve.Group
+	var danger, updates, creates, reads, drift, driftLeft []sieve.Group
 	for _, g := range rep.Groups {
 		switch {
 		case g.Drift && g.Sample.DriftReverted:
@@ -83,6 +83,8 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 			danger = append(danger, g)
 		case g.Action == model.ActionUpdate:
 			updates = append(updates, g)
+		case g.Action == model.ActionRead:
+			reads = append(reads, g)
 		default:
 			creates = append(creates, g)
 		}
@@ -94,6 +96,7 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 	mdSection(b, opts, "Drift this plan leaves", driftLeft, false, true)
 	mdSection(b, opts, "Update", updates, true, true)
 	mdSection(b, opts, "Create", creates, true, false)
+	mdSection(b, opts, "Read (data sources, resolved during apply)", reads, true, false)
 	mdSection(b, opts, "Drift this plan puts back", drift, true, true)
 
 	b.line("")

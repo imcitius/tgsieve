@@ -96,17 +96,21 @@ type HiddenAttr struct {
 
 // Resource is one resource change in one unit.
 type Resource struct {
-	Unit        string       `json:"unit"`
-	Address     string       `json:"address"`
-	BaseAddress string       `json:"base_address"` // address with the [index] stripped
-	Module      string       `json:"module,omitempty"`
-	Type        string       `json:"type"`
-	Name        string       `json:"name"`
-	Index       any          `json:"index,omitempty"`
-	Provider    string       `json:"provider,omitempty"`
-	Action      Action       `json:"action"`
-	Attrs       []AttrChange `json:"attrs,omitempty"`
-	Drift       bool         `json:"drift,omitempty"`
+	Unit        string `json:"unit"`
+	Address     string `json:"address"`
+	BaseAddress string `json:"base_address"` // address with the [index] stripped
+	Module      string `json:"module,omitempty"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Index       any    `json:"index,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	// Mode is "managed" for resources and "data" for data sources. A data
+	// source is read, never created, and saying otherwise misdescribes what
+	// an apply will do.
+	Mode   string       `json:"mode,omitempty"`
+	Action Action       `json:"action"`
+	Attrs  []AttrChange `json:"attrs,omitempty"`
+	Drift  bool         `json:"drift,omitempty"`
 	// DriftReverted marks drift the plan will undo. Drift the plan does not
 	// address is the kind that survives an apply, and is worth separating.
 	DriftReverted bool `json:"drift_reverted,omitempty"`

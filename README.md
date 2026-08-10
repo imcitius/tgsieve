@@ -439,6 +439,7 @@ hide:
   unchanged_units: true   # units with nothing left to say become a count
   drift: false            # refresh-detected drift gets its own section
   outputs: false
+  reads: false            # data sources resolved during apply
 
 ignore:
   - name: tag churn

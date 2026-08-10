@@ -147,7 +147,7 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 		}
 	}
 
-	var danger, updates, creates, drift, driftLeft []sieve.Group
+	var danger, updates, creates, reads, drift, driftLeft []sieve.Group
 	for _, g := range rep.Groups {
 		switch {
 		case g.Drift && g.Sample.DriftReverted:
@@ -158,6 +158,10 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 			danger = append(danger, g)
 		case g.Action == model.ActionUpdate:
 			updates = append(updates, g)
+		case g.Action == model.ActionRead:
+			// A data source is read, not created. Filing it under CREATE
+			// describes an apply that will not happen.
+			reads = append(reads, g)
 		default:
 			creates = append(creates, g)
 		}
@@ -166,6 +170,7 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 	section(w, p, opts, "DESTROY / REPLACE", danger, true)
 	section(w, p, opts, "UPDATE", updates, true)
 	section(w, p, opts, "CREATE", creates, opts.Verbose)
+	section(w, p, opts, "READ (data sources, resolved during apply)", reads, opts.Verbose)
 	section(w, p, opts, "DRIFT — this plan puts it back", drift, true)
 	section(w, p, opts, "DRIFT — this plan leaves it", driftLeft, true)
 

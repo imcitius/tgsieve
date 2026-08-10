@@ -181,6 +181,18 @@ type Report struct {
 
 func (r Report) HasChanges() bool { return r.Kept.Total() > 0 }
 
+// Reads counts the data sources that will be resolved during apply. They are
+// not changes and never counted as such, but they are worth showing.
+func (r Report) Reads() int {
+	n := 0
+	for _, g := range r.Groups {
+		if g.Action == model.ActionRead {
+			n += g.Instances()
+		}
+	}
+	return n
+}
+
 // ChangedUnits lists the units with something to do, which is what an apply
 // actually works through — the rest of the queue is visited and left alone.
 func (r Report) ChangedUnits() []string {
@@ -215,6 +227,7 @@ func ApplyAt(run model.Run, cfg *config.Config, now time.Time) *Report {
 
 	hideDrift := cfg.Hide.Drift != nil && *cfg.Hide.Drift
 	hideOutputs := cfg.Hide.Outputs != nil && *cfg.Hide.Outputs
+	hideReads := cfg.Hide.Reads != nil && *cfg.Hide.Reads
 
 	kept := make([]model.Resource, 0, 128)
 	for _, u := range run.Units {
@@ -234,6 +247,9 @@ func ApplyAt(run model.Run, cfg *config.Config, now time.Time) *Report {
 		unitKept := 0
 		for _, res := range u.Resources {
 			if res.Drift && hideDrift {
+				continue
+			}
+			if res.Action == model.ActionRead && hideReads {
 				continue
 			}
 			res, gone := normalizeAttrs(res, cfg, rep)

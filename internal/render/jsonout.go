@@ -85,6 +85,7 @@ type jsonChange struct {
 	Units         []string   `json:"units"`
 	Instances     int        `json:"instances"`
 	Address       string     `json:"address"`
+	Mode          string     `json:"mode,omitempty"`
 	Type          string     `json:"type"`
 	Name          string     `json:"name"`
 	Module        string     `json:"module,omitempty"`
@@ -187,6 +188,7 @@ func JSON(w io.Writer, rep *sieve.Report, meta Meta, applied *jsonApplied) error
 			Units:         g.Units,
 			Instances:     g.Instances(),
 			Address:       g.Sample.BaseAddress,
+			Mode:          g.Sample.Mode,
 			Type:          g.Sample.Type,
 			Name:          g.Sample.Name,
 			Module:        g.Sample.Module,

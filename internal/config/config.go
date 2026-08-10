@@ -37,6 +37,9 @@ type Hide struct {
 	Drift *bool `yaml:"drift"`
 	// Outputs hides output-only changes.
 	Outputs *bool `yaml:"outputs"`
+	// Reads hides data sources that will be read during apply. They are not
+	// changes, but they do explain why other values are unknown.
+	Reads *bool `yaml:"reads"`
 }
 
 // Rule removes attributes from resources it matches. Every selector that is
@@ -149,7 +152,7 @@ func Default() *Config {
 	t, f := true, false
 	return &Config{
 		Version:   1,
-		Hide:      Hide{UnchangedUnits: &t, Drift: &f, Outputs: &f},
+		Hide:      Hide{UnchangedUnits: &t, Drift: &f, Outputs: &f, Reads: &f},
 		NeverHide: NeverHide{Actions: &[]string{"delete", "replace"}},
 		Collapse:  Collapse{Instances: &t, CrossUnit: &t, CrossUnitMode: "shape", MinUnits: 2},
 		// Nothing is normalized away by default; both of these are opinions
@@ -276,6 +279,9 @@ func merge(dst, src *Config) {
 	}
 	if src.Hide.Outputs != nil {
 		dst.Hide.Outputs = src.Hide.Outputs
+	}
+	if src.Hide.Reads != nil {
+		dst.Hide.Reads = src.Hide.Reads
 	}
 	dst.Extends = append(dst.Extends, src.Extends...)
 	dst.Ignore = append(dst.Ignore, src.Ignore...)

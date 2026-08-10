@@ -106,3 +106,20 @@ func TestMarkdownReportsFailuresFirst(t *testing.T) {
 		t.Errorf("missing failure section:\n%s", got)
 	}
 }
+
+func TestMarkdownFilesReadsSeparatelyFromCreates(t *testing.T) {
+	read := group(model.ActionRead, "u", "data.aws_ami.this")
+	read.Sample.Mode = "data"
+	rep := &sieve.Report{
+		Kept: model.Counts{Create: 1}, UnitsTotal: 1, UnitsChanged: 1,
+		Groups: []sieve.Group{group(model.ActionCreate, "u", "aws_instance.web"), read},
+	}
+
+	got := renderMD(t, rep, Options{})
+	if !strings.Contains(got, "Create (1)") {
+		t.Errorf("the create section should count only the creation:\n%s", got)
+	}
+	if !strings.Contains(got, "Read (data sources, resolved during apply) (1)") {
+		t.Errorf("reads deserve their own section:\n%s", got)
+	}
+}

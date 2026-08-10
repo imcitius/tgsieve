@@ -506,3 +506,40 @@ func TestRulesReachDriftEntries(t *testing.T) {
 		t.Errorf("a rule covering every drifted attribute should remove it: %+v", rep.Groups)
 	}
 }
+
+func TestDataSourceReadsAreNotChanges(t *testing.T) {
+	// terraform reports a deferred data source as mode "data", action "read".
+	// It creates nothing, so it must not be counted or filed as a creation.
+	read := res("u", "data.aws_ami.this", "aws_ami", "this", model.ActionRead, attr("id", nil, "ami-1"))
+	read.Mode = "data"
+	create := res("u", "aws_instance.web", "aws_instance", "web", model.ActionCreate, attr("ami", nil, "ami-1"))
+
+	rep := Apply(model.Run{Units: []model.Unit{{Path: "u", Resources: []model.Resource{read, create}}}},
+		config.Default())
+
+	if rep.Kept.Create != 1 {
+		t.Errorf("a read is not a creation: Create = %d, want 1", rep.Kept.Create)
+	}
+	if rep.Kept.Total() != 1 {
+		t.Errorf("a read is not a change at all: total = %d, want 1", rep.Kept.Total())
+	}
+	if rep.Reads() != 1 {
+		t.Errorf("Reads() = %d, want 1", rep.Reads())
+	}
+}
+
+func TestReadsCanBeHidden(t *testing.T) {
+	read := res("u", "data.aws_ami.this", "aws_ami", "this", model.ActionRead, attr("id", nil, "ami-1"))
+	read.Mode = "data"
+	run := model.Run{Units: []model.Unit{{Path: "u", Resources: []model.Resource{read}}}}
+
+	if rep := Apply(run, config.Default()); rep.Reads() != 1 {
+		t.Fatal("reads are shown by default: they explain why other values are unknown")
+	}
+	cfg := config.Default()
+	yes := true
+	cfg.Hide.Reads = &yes
+	if rep := Apply(run, cfg); len(rep.Groups) != 0 {
+		t.Errorf("hide.reads should remove them: %+v", rep.Groups)
+	}
+}
