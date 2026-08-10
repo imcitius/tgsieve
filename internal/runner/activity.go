@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/imcitius/tgsieve/internal/textutil"
 )
 
 // Activity tracks what terraform is doing right now, so a long apply shows its
@@ -42,7 +44,9 @@ var activityRe = regexp.MustCompile(`^(\S.*?): (Creating|Still creating|Creation
 // Observe records a line of terraform output, reporting whether it was one it
 // recognised.
 func (a *Activity) Observe(unit, line string) bool {
-	m := activityRe.FindStringSubmatch(strings.TrimSpace(line))
+	// terraform colours its own output, and terragrunt passes it through, so
+	// the address would otherwise arrive wrapped in escape sequences.
+	m := activityRe.FindStringSubmatch(strings.TrimSpace(textutil.StripANSI(line)))
 	if m == nil {
 		return false
 	}
@@ -192,6 +196,56 @@ func (a *Activity) Lines(max int, width int) []string {
 		out = append(out, clip(line, width))
 	}
 	return out
+}
+
+// Outcome is what became of one resource during an apply.
+type Outcome struct {
+	Unit     string
+	Addr     string
+	Verb     string
+	Took     time.Duration
+	Finished bool
+}
+
+// Results reports what finished and what did not. After a failed apply this is
+// the only record of what actually landed: the plan describes intent, and the
+// error says why it stopped, but neither says how far it got.
+func (a *Activity) Results() (done, unfinished []Outcome) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	for _, e := range a.entries {
+		if e.verb == "refreshing" || e.verb == "reading" {
+			// Refreshes and reads change nothing; they are progress, not work.
+			continue
+		}
+		o := Outcome{Unit: e.unit, Addr: e.addr, Verb: e.verb, Finished: !e.ended.IsZero()}
+		if o.Finished {
+			o.Took = e.ended.Sub(e.started)
+			done = append(done, o)
+		} else {
+			o.Took = now.Sub(e.started)
+			unfinished = append(unfinished, o)
+		}
+	}
+	sort.Slice(done, func(i, j int) bool { return done[i].Addr < done[j].Addr })
+	sort.Slice(unfinished, func(i, j int) bool { return unfinished[i].Took > unfinished[j].Took })
+	return done, unfinished
+}
+
+// Past renders a verb as what happened rather than what is happening.
+func Past(verb string) string {
+	switch verb {
+	case "creating":
+		return "created"
+	case "modifying":
+		return "modified"
+	case "destroying":
+		return "destroyed"
+	case "provisioning":
+		return "provisioned"
+	}
+	return verb
 }
 
 // Running counts what is in flight, for the status line.

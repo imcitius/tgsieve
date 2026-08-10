@@ -100,7 +100,7 @@ func TestOutcomeNeverClaimsAnAppliedRunThatFailed(t *testing.T) {
 			t.Errorf("%s: should count as a failed apply", c.name)
 		}
 		var buf bytes.Buffer
-		renderOutcome(&buf, planned, &out, &res, render.Options{})
+		renderOutcome(&buf, planned, &out, &res, nil, nil, render.Options{})
 		if strings.Contains(buf.String(), "APPLIED") && !strings.Contains(buf.String(), "APPLY") {
 			t.Errorf("%s: reported success:\n%s", c.name, buf.String())
 		}
@@ -117,7 +117,7 @@ func TestOutcomeReportsSuccessPlainly(t *testing.T) {
 	out := sieve.Report{}
 
 	var buf bytes.Buffer
-	renderOutcome(&buf, planned, &out, &res, render.Options{})
+	renderOutcome(&buf, planned, &out, &res, nil, nil, render.Options{})
 	got := buf.String()
 	if !strings.Contains(got, "APPLIED") {
 		t.Fatalf("a clean apply should say so:\n%s", got)
@@ -133,7 +133,7 @@ func TestErrorSurfacesWhenNoUnitWasBlamed(t *testing.T) {
 	res := runner.Result{ExitCode: 1, Errors: []string{"EOF"}}
 	out := sieve.Report{}
 	var buf bytes.Buffer
-	renderOutcome(&buf, report(model.Counts{Update: 1}), &out, &res, render.Options{})
+	renderOutcome(&buf, report(model.Counts{Update: 1}), &out, &res, nil, nil, render.Options{})
 	if !strings.Contains(buf.String(), "EOF") {
 		t.Errorf("the error text is missing:\n%s", buf.String())
 	}
@@ -165,3 +165,41 @@ func TestApproveGivesUpWhenInterrupted(t *testing.T) {
 type neverReads struct{}
 
 func (neverReads) Read([]byte) (int, error) { select {} }
+
+func TestLandedReportsWhatActuallyChanged(t *testing.T) {
+	// After a failure the plan describes intent and the error says why it
+	// stopped; neither says how far it got.
+	res := runner.Result{ExitCode: 1, Errors: []string{"Error: updating EKS Node Group"}}
+	out := sieve.Report{}
+	done := []runner.Outcome{
+		{Unit: "envs/prod/a", Addr: "aws_instance.web", Verb: "creating", Took: 3 * time.Second, Finished: true},
+	}
+	unfinished := []runner.Outcome{
+		{Unit: "envs/prod/a", Addr: "aws_eks_node_group.this", Verb: "modifying", Took: 15 * time.Minute},
+	}
+
+	var buf bytes.Buffer
+	renderOutcome(&buf, report(model.Counts{Update: 3}), &out, &res, done, unfinished, render.Options{})
+	got := buf.String()
+
+	for _, want := range []string{
+		"terraform changed 1 resource",
+		"1 did not finish",
+		"aws_eks_node_group.this",
+		"did not finish after 15m0s",
+		"aws_instance.web",
+		"created in 3s",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestLandedIsSilentWhenNothingRan(t *testing.T) {
+	var buf bytes.Buffer
+	renderOutcome(&buf, report(model.Counts{Update: 1}), &sieve.Report{}, &runner.Result{}, nil, nil, render.Options{})
+	if strings.Contains(buf.String(), "terraform changed") {
+		t.Errorf("nothing to report should stay quiet:\n%s", buf.String())
+	}
+}

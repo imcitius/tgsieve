@@ -89,6 +89,11 @@ type TFEvent struct {
 		} `json:"resource"`
 		Action string `json:"action"`
 	} `json:"hook"`
+	Outputs map[string]struct {
+		Sensitive bool   `json:"sensitive"`
+		Value     any    `json:"value"`
+		Action    string `json:"action"`
+	} `json:"outputs"`
 	Diagnostic struct {
 		Severity string `json:"severity"`
 		Summary  string `json:"summary"`
@@ -127,6 +132,9 @@ type Result struct {
 	// durations records how long each unit took when no run report exists,
 	// which is the case when terragrunt is not involved.
 	durations map[string]time.Duration
+	// Outputs are the values terraform printed at the end of an apply, when it
+	// reported them structurally.
+	Outputs map[string]any
 
 	// TFPath is the binary terragrunt actually used, as terragrunt reported
 	// it. Which binary ran is the first thing worth knowing when a whole stack
@@ -823,6 +831,17 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 	case "apply_complete":
 		if opts.Progress != nil {
 			opts.Progress.PlannedResource()
+		}
+	case "outputs":
+		if len(ev.Outputs) > 0 {
+			if res.Outputs == nil {
+				res.Outputs = map[string]any{}
+			}
+			for k, v := range ev.Outputs {
+				// Normalised here so the renderer does not have to know the
+				// shape of terraform's event.
+				res.Outputs[k] = map[string]any{"sensitive": v.Sensitive, "value": v.Value}
+			}
 		}
 	case "diagnostic":
 		if ev.Diagnostic.Severity == "error" {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -203,6 +204,8 @@ func cmdApply(args []string) (int, error) {
 	outcome.TFPath = res.TFPath
 	outcome.Direct = cf.direct()
 
+	done, unfinished := applyProg.Activity.Results()
+
 	switch {
 	case cf.jsonFormat():
 		applied := render.AppliedResult(!applyFailed(outcome, res),
@@ -213,7 +216,7 @@ func cmdApply(args []string) (int, error) {
 	case cf.markdown():
 		renderOutcomeMarkdown(os.Stdout, rep, outcome, res)
 	default:
-		renderOutcome(os.Stdout, rep, outcome, res, cf.renderOpts())
+		renderOutcome(os.Stdout, rep, outcome, res, done, unfinished, cf.renderOpts())
 	}
 
 	if res.Interrupted {
@@ -308,7 +311,7 @@ func applyFailed(outcome *sieve.Report, res *runner.Result) bool {
 }
 
 // renderOutcome reports what the apply did with the plans that were shown.
-func renderOutcome(w io.Writer, planned, outcome *sieve.Report, res *runner.Result, opts render.Options) {
+func renderOutcome(w io.Writer, planned, outcome *sieve.Report, res *runner.Result, done, unfinished []runner.Outcome, opts render.Options) {
 	p := paletteFor(opts.Color)
 	took := res.Duration.Round(100 * time.Millisecond)
 
@@ -339,6 +342,7 @@ func renderOutcome(w io.Writer, planned, outcome *sieve.Report, res *runner.Resu
 		if res.TFPath != "" {
 			fmt.Fprintf(w, "  %s\n", p("2", "terragrunt ran "+res.TFPath))
 		}
+		renderLanded(w, res, done, unfinished, opts, true)
 		fmt.Fprintf(w, "  %s\n", p("2", "run tgsieve plan to see where things actually stand"))
 		return
 	}
@@ -350,6 +354,7 @@ func renderOutcome(w io.Writer, planned, outcome *sieve.Report, res *runner.Resu
 	if c := planned.Kept; c.Delete+c.Replace > 0 {
 		fmt.Fprintf(w, "  %s\n", p("2", fmt.Sprintf("%d destroyed, %d replaced", c.Delete, c.Replace)))
 	}
+	renderLanded(w, res, done, unfinished, opts, false)
 }
 
 // renderOutcomeMarkdown reports the apply in the same document shape as the
@@ -379,6 +384,90 @@ func renderOutcomeMarkdown(w io.Writer, planned, outcome *sieve.Report, res *run
 	if c := planned.Kept; c.Delete+c.Replace > 0 {
 		fmt.Fprintf(w, "\n%d destroyed, %d replaced.\n", c.Delete, c.Replace)
 	}
+}
+
+// renderLanded reports what the apply actually did to infrastructure, which
+// after a failure is the question the plan above cannot answer: it describes
+// intent, and the error says why it stopped, but neither says how far it got.
+func renderLanded(w io.Writer, res *runner.Result, done, unfinished []runner.Outcome, opts render.Options, failed bool) {
+	p := paletteFor(opts.Color)
+	if len(done) == 0 && len(unfinished) == 0 {
+		return
+	}
+
+	// Counted from what terraform reported doing, not from the plan: the sieve
+	// may have hidden resources from the report, and comparing the two would
+	// produce arithmetic like "21 of 20".
+	parts := []string{"terraform changed " + plural(len(done), "resource")}
+	if len(unfinished) > 0 {
+		parts = append(parts, fmt.Sprintf("%d did not finish", len(unfinished)))
+	}
+	if len(done) > 1 {
+		parts = append(parts, "slowest first")
+	}
+	fmt.Fprintf(w, "  %s\n", p("2", strings.Join(parts, " · ")))
+
+	sort.SliceStable(done, func(i, j int) bool { return done[i].Took > done[j].Took })
+
+	for _, o := range unfinished {
+		fmt.Fprintf(w, "    %s %s%s\n", p("31", "✗"), scopePrefix(o.Unit)+o.Addr,
+			p("31", fmt.Sprintf(" — %s, did not finish after %s", o.Verb, o.Took.Round(time.Second))))
+	}
+	// After a failure this list is the evidence of what landed, so it is worth
+	// more room than the summary of a run that went fine.
+	limit := opts.MaxUnits
+	if limit <= 0 {
+		limit = 6
+	}
+	if failed && limit < 20 {
+		limit = 20
+	}
+	shown := done
+	extra := 0
+	if len(shown) > limit {
+		extra = len(shown) - limit
+		shown = shown[:limit]
+	}
+	for _, o := range shown {
+		fmt.Fprintf(w, "    %s %s %s\n", p("32", "✓"), scopePrefix(o.Unit)+o.Addr,
+			p("2", fmt.Sprintf("%s in %s", runner.Past(o.Verb), o.Took.Round(time.Second))))
+	}
+	if extra > 0 {
+		fmt.Fprintf(w, "    %s\n", p("2", fmt.Sprintf("… and %d more applied", extra)))
+	}
+
+	if len(res.Outputs) > 0 {
+		fmt.Fprintf(w, "  %s\n", p("1", "OUTPUTS"))
+		names := make([]string, 0, len(res.Outputs))
+		for k := range res.Outputs {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, k := range names {
+			fmt.Fprintf(w, "    %s %s\n", k, p("2", outputValue(res.Outputs[k], opts.MaxValue)))
+		}
+	}
+}
+
+// scopePrefix names the unit when there is one to name. A single-module run
+// has no unit worth repeating on every line.
+func scopePrefix(unit string) string {
+	if unit == "" {
+		return ""
+	}
+	return unit + " "
+}
+
+// outputValue renders an output, keeping sensitive ones out of the terminal.
+func outputValue(v any, max int) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return render.FormatValue(v, max)
+	}
+	if s, _ := m["sensitive"].(bool); s {
+		return "(sensitive)"
+	}
+	return render.FormatValue(m["value"], max)
 }
 
 // paletteFor keeps the outcome block's colouring in step with the renderer

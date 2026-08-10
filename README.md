@@ -131,6 +131,22 @@ tgsieve apply --all --plans ./plans
 Those plans carry the provenance described below, so an apply against code that
 has moved on is refused rather than applied.
 
+When it finishes — or stops — the report says what terraform actually did,
+which after a failure is the question the plan cannot answer:
+
+```
+APPLY FAILED
+  stopped after 15m45s — the report above is what was planned, not what landed
+  ✗ Error: updating EKS Node Group (…) config: operation error EKS
+  terraform changed 4 resources · 1 did not finish · slowest first
+    ✗ terraform/live/ctrl/tests/eks module.eks…aws_eks_node_group.this — modifying, did not finish after 15m2s
+    ✓ terraform/live/ctrl/tests/eks aws_security_group_rule.node created in 3s
+  run tgsieve plan to see where things actually stand
+```
+
+Output values are reported after a successful apply, with sensitive ones
+withheld.
+
 Long values are trimmed **around the difference**, not from the start — two
 values that share a 200-character prefix would otherwise show that prefix
 twice and hide what changed. `--max-value 0` prints them in full. A string that

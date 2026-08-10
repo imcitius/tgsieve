@@ -509,6 +509,10 @@ func window(r []rune, start, max int) string {
 	return out
 }
 
+// FormatValue renders one value the way the report does, for callers outside
+// this package.
+func FormatValue(v any, max int) string { return fmtVal(v, max) }
+
 func fmtVal(v any, max int) string {
 	var s string
 	switch t := v.(type) {

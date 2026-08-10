@@ -20,19 +20,22 @@ and aborted — while the outcome block still announced APPLIED. Runs tgsieve
 drives now pass --non-interactive (tgsieve does the asking itself), and the
 outcome refuses to describe a failed run as applied.
 
+Also done: the outcome reports what terraform actually changed, taken from the
+events that drive the live window, so a failed apply says how far it got
+instead of leaving the plan's intent as the only record. Output values are
+reported after a successful apply, with sensitive ones withheld.
+
 Still open there:
 
-- **No per-resource progress.** The status line counts units, so a single unit
-  creating forty things looks stalled. terraform's `-json` stream carries
-  apply events; a stack run cannot use it (the lines interleave unlabelled),
-  but a single-unit apply could.
-- **A failed apply reports units, not resources.** When a unit fails halfway,
-  the report still describes what was planned. What actually landed is only
-  discoverable by planning again.
-- **No output values after apply.** Terraform prints them; tgsieve currently
-  swallows them along with everything else.
+- **Outputs only for the terraform engine and single units.** They come from
+  terraform's structured `outputs` event. A stack run through terragrunt gets
+  them as text per unit, which is not parsed.
+- **"Did not finish" is not "failed".** A resource still in flight when the run
+  stopped is reported as unfinished, because terraform's text output does not
+  say which resource the error belongs to. The structured stream has
+  `apply_errored`; using it would let the single-unit path name the culprit.
 - **`--plans` does not verify the binary plans match the JSON ones** it renders
-  from. They are written by the same run today, so this is only a concern if
+  from. They are written by the same run today, so this only matters if
   someone edits the directory.
 
 ### Baseline / diff-of-diffs
