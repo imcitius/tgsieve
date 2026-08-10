@@ -435,10 +435,12 @@ func renderValue(p painter, a model.AttrChange, max int) string {
 	default:
 		after = p.green(fmtVal(a.After, max))
 	}
-	if a.Before == nil {
-		return after
-	}
 	before := fmtVal(a.Before, max)
+	if a.Before == nil {
+		// An attribute that had no prior value at all: saying only what it
+		// became reads as a statement of fact rather than as a change.
+		before = "(unset)"
+	}
 	if a.Sensitive {
 		before = "(sensitive)"
 	}

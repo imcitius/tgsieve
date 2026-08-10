@@ -246,10 +246,10 @@ func mdValue(a model.AttrChange, max int) string {
 	case a.AfterUnknown:
 		after = "_(known after apply)_"
 	}
-	if a.Before == nil {
-		return after
-	}
 	before := "`" + mdCode(fmtVal(a.Before, max)) + "`"
+	if a.Before == nil {
+		before = "_(unset)_"
+	}
 	if a.Sensitive {
 		before = "_(sensitive)_"
 	}

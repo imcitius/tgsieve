@@ -483,3 +483,26 @@ func TestOneMessageFromSeveralPlacesKeepsThePlaces(t *testing.T) {
 		}
 	}
 }
+
+func TestRulesReachDriftEntries(t *testing.T) {
+	// Drift that recurs on every plan — a computed status, a flag another
+	// system owns — has to be silenceable like anything else.
+	cfg := cfgWith(t, config.Rule{
+		Name:  "peering status churn",
+		Attrs: []string{"accept_status", "*.allow_remote_vpc_dns_resolution"},
+	})
+	r := res("infra/networking", "module.p.aws_vpc_peering_connection.this",
+		"aws_vpc_peering_connection", "this", model.ActionUpdate,
+		attr("accept_status", "pending-acceptance", "active"),
+		attr("requester.0.allow_remote_vpc_dns_resolution", false, true))
+	r.Drift = true
+	run := model.Run{Units: []model.Unit{{Path: "infra/networking", Resources: []model.Resource{r}}}}
+
+	if rep := Apply(run, config.Default()); rep.Kept.Drift != 1 {
+		t.Fatalf("without rules the drift is reported: %+v", rep.Kept)
+	}
+	rep := Apply(run, cfg)
+	if len(rep.Groups) != 0 || rep.Kept.Drift != 0 {
+		t.Errorf("a rule covering every drifted attribute should remove it: %+v", rep.Groups)
+	}
+}

@@ -139,6 +139,13 @@ func cmdApply(args []string) (int, error) {
 		return exitUnitsFail, nil
 	}
 	if !rep.HasChanges() {
+		if rep.Kept.Drift > 0 {
+			// Drift is state catching up with reality, not work an apply does.
+			fmt.Fprintf(os.Stderr,
+				"nothing to apply — the %s above %s already been recorded by the refresh, and this plan does not act on %s\n",
+				plural(rep.Kept.Drift, "drifted resource"), was(rep.Kept.Drift), them(rep.Kept.Drift))
+			return exitOK, nil
+		}
 		fmt.Fprintln(os.Stderr, "nothing to apply")
 		return exitOK, nil
 	}
@@ -182,6 +189,20 @@ func cmdApply(args []string) (int, error) {
 		return exitUnitsFail, nil
 	}
 	return exitOK, nil
+}
+
+func was(n int) string {
+	if n == 1 {
+		return "has"
+	}
+	return "have"
+}
+
+func them(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }
 
 // approve asks before changing anything, twice when the plan destroys or

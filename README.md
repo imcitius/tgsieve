@@ -476,6 +476,27 @@ The second is the one that bites: an attribute under `ignore_changes`, or a
 resource the configuration no longer governs, stays drifted after the apply.
 The summary carries the same distinction — `!3 drift (1 not addressed)`.
 
+Drift is terraform's own finding, not tgsieve's: the refresh read the real
+infrastructure and it no longer matched state. Computed attributes are the
+usual source — a peering connection that moved from `pending-acceptance` to
+`active`, a flag another system flipped — and since the configuration never
+asserted a value, no plan will ever "fix" them and they come back every run.
+
+Three ways to deal with recurring drift, in order of how much they concede:
+
+```yaml
+ignore:
+  - name: peering status churn      # silence those attributes everywhere
+    attrs: ["accept_status", "*.allow_remote_vpc_dns_resolution"]
+
+hide:
+  drift: true                       # drop the drift sections entirely
+```
+
+or assert the value in your configuration, so the next plan changes it back
+rather than reporting it forever. Rules apply to drift exactly as they do to
+planned changes.
+
 ## Reading collections
 
 Terraform renders sets as arrays, so a set that comes back in a different order
