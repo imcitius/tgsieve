@@ -87,6 +87,7 @@ type TFEvent struct {
 		Resource struct {
 			Addr string `json:"addr"`
 		} `json:"resource"`
+		Action string `json:"action"`
 	} `json:"hook"`
 	Diagnostic struct {
 		Severity string `json:"severity"`
@@ -585,12 +586,18 @@ func streamCmd(ctx context.Context, opts Options, res *Result, cmd *exec.Cmd, di
 					opts.Progress.Error(head)
 				}
 			case "stdout", "stderr":
-				// The wall of terraform text we exist to replace — except for
-				// the one line that says a unit finished.
+				// The wall of terraform text we exist to replace — but the
+				// lines announcing what is being created right now are worth
+				// showing while it happens.
 				if opts.Progress != nil {
 					opts.Progress.Unit(ll.WorkingDir)
 					if unitFinished(ll.Msg) {
 						opts.Progress.UnitDone(ll.WorkingDir)
+					}
+					if opts.Progress.Activity != nil {
+						for _, l := range strings.Split(ll.Msg, "\n") {
+							opts.Progress.Activity.Observe(ll.WorkingDir, l)
+						}
 					}
 				}
 			default:
@@ -792,6 +799,17 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 	var ev TFEvent
 	if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.Type == "" {
 		return false
+	}
+	if opts.Progress != nil && opts.Progress.Activity != nil {
+		addr := ev.Hook.Resource.Addr
+		if addr == "" {
+			addr = ev.Change.Resource.Addr
+		}
+		action := ev.Hook.Action
+		if action == "" {
+			action = ev.Change.Action
+		}
+		opts.Progress.Activity.Event("", ev.Type, addr, action)
 	}
 	switch ev.Type {
 	case "refresh_complete":

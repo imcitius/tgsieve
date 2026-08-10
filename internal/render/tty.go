@@ -580,8 +580,9 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 			plural(rep.Normalized, "difference"))))
 	}
 	if rep.HiddenAttrs > 0 || rep.HiddenResources > 0 {
-		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("sieved: %d attributes and %d resources hidden by %s%s",
-			rep.HiddenAttrs, rep.HiddenResources, plural(len(rep.RuleStats), "rule"), hint(opts.Explain, " (--explain)"))))
+		fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("sieved: %s and %s hidden by %s%s",
+			plural(rep.HiddenAttrs, "attribute"), plural(rep.HiddenResources, "resource"),
+			plural(len(rep.RuleStats), "rule"), hint(opts.Explain, " (--explain)"))))
 		if opts.Explain {
 			for _, s := range rep.RuleStats {
 				fmt.Fprintf(w, "      %s %s\n", p.dim(fmt.Sprintf("%4d attrs, %3d resources", s.Attrs, s.Res)), s.Rule)
@@ -603,7 +604,7 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 		if opts.ShowEmpty {
 			fmt.Fprintf(w, "  %s\n", p.dim("unchanged: "+strings.Join(rep.UnchangedUnits, ", ")))
 		} else {
-			fmt.Fprintf(w, "  %s\n", p.dim(fmt.Sprintf("unchanged: %d units (--show-empty)", len(rep.UnchangedUnits))))
+			fmt.Fprintf(w, "  %s\n", p.dim("unchanged: "+plural(len(rep.UnchangedUnits), "unit")+" (--show-empty)"))
 		}
 	}
 }

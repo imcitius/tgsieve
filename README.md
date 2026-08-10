@@ -211,8 +211,20 @@ cover the whole stack rather than only the units that just ran. Reused
 measurements are labelled with their age and expire after two weeks, since a
 unit that has since been split or sped up should not keep its old reputation.
 
-While the run is in flight you get one status line and nothing else, plus any
-unit's failure the moment it happens rather than at the end:
+While the run is in flight you see what terraform is doing, in a window that
+updates in place rather than scrolling — the lines terraform prints are already
+reaching tgsieve, tagged with the unit they came from:
+
+```
+  envs/prod/a  aws_db_instance.main     modifying… 1m12s
+  envs/prod/b  aws_instance.web[3]      creating… 22s
+  envs/dev/a   null_resource.deploy     done 4s
+⠴ applying · 7/12 applied · 1m30s
+```
+
+`--window N` sets its height (default 10, `--window 0` for a single status
+line). Failures still interrupt it the moment they happen rather than waiting
+for the end:
 
 ```
 ⠴ planning · 12/28 planned · 4 running · 47s

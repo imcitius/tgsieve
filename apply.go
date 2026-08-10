@@ -74,6 +74,8 @@ func cmdApply(args []string) (int, error) {
 	color := useColor(cf.noColor)
 	prog := runner.NewProgress(os.Stderr, isTTY(os.Stderr), cf.verbose)
 	prog.Color = color
+	prog.Window = runner.WindowSize(cf.window)
+	prog.Activity = runner.NewActivity()
 
 	opts := runner.Options{
 		Dir:            cf.dir,
@@ -163,9 +165,13 @@ func cmdApply(args []string) (int, error) {
 	}
 
 	// Phase two: ask.
-	ok, err := approve(os.Stdin, os.Stderr, rep, *autoApprove, isTTY(os.Stdin))
+	ok, err := approve(ctx, os.Stdin, os.Stderr, rep, *autoApprove, isTTY(os.Stdin))
 	if err != nil {
 		return exitToolError, err
+	}
+	if ctx.Err() != nil {
+		fmt.Fprintln(os.Stderr, "\ninterrupted — nothing was applied")
+		return exitInterrupt, nil
 	}
 	if !ok {
 		if cf.jsonFormat() {
@@ -179,6 +185,8 @@ func cmdApply(args []string) (int, error) {
 	applyProg := runner.NewProgress(os.Stderr, isTTY(os.Stderr), cf.verbose)
 	applyProg.Color = color
 	applyProg.Verb = "applying"
+	applyProg.Window = runner.WindowSize(cf.window)
+	applyProg.Activity = runner.NewActivity()
 	applyProg.Track(rep.ChangedUnits())
 
 	applyOpts := opts
@@ -235,7 +243,7 @@ func them(n int) string {
 // approve asks before changing anything, twice when the plan destroys or
 // replaces: those are the changes that cannot be undone by running the tool
 // again.
-func approve(in io.Reader, out io.Writer, rep *sieve.Report, autoApprove, interactive bool) (bool, error) {
+func approve(ctx context.Context, in io.Reader, out io.Writer, rep *sieve.Report, autoApprove, interactive bool) (bool, error) {
 	destructive := rep.Kept.Delete + rep.Kept.Replace
 	if autoApprove {
 		if destructive > 0 {
@@ -251,11 +259,8 @@ func approve(in io.Reader, out io.Writer, rep *sieve.Report, autoApprove, intera
 	reader := bufio.NewReader(in)
 	fmt.Fprintf(out, "\napply %s across %s? [yes/no] ",
 		plural(rep.Kept.Total(), "change"), plural(rep.UnitsChanged, "unit"))
-	answer, err := reader.ReadString('\n')
-	if err != nil && answer == "" {
-		return false, nil
-	}
-	if strings.TrimSpace(strings.ToLower(answer)) != "yes" {
+	answer, ok := readLine(ctx, reader)
+	if !ok || strings.TrimSpace(strings.ToLower(answer)) != "yes" {
 		return false, nil
 	}
 
@@ -264,11 +269,35 @@ func approve(in io.Reader, out io.Writer, rep *sieve.Report, autoApprove, intera
 	}
 	fmt.Fprintf(out, "%s will be destroyed or replaced — type 'destroy' to confirm: ",
 		plural(destructive, "resource"))
-	answer, err = reader.ReadString('\n')
-	if err != nil && answer == "" {
+	answer, ok = readLine(ctx, reader)
+	if !ok {
 		return false, nil
 	}
 	return strings.TrimSpace(strings.ToLower(answer)) == "destroy", nil
+}
+
+// readLine waits for an answer without ignoring Ctrl-C. A plain blocking read
+// swallows the interrupt: the signal is handled, the read keeps waiting, and
+// the terminal echoes "^C" as if the keypress did nothing.
+func readLine(ctx context.Context, r *bufio.Reader) (string, bool) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := r.ReadString('\n')
+		ch <- result{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", false
+	case res := <-ch:
+		if res.err != nil && res.line == "" {
+			return "", false
+		}
+		return res.line, true
+	}
 }
 
 // applyFailed reports whether the apply ran to completion. Anything short of

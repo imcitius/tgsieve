@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/imcitius/tgsieve/internal/model"
 	"github.com/imcitius/tgsieve/internal/render"
@@ -17,7 +20,7 @@ func report(counts model.Counts) *sieve.Report {
 
 func TestApproveRefusesWithoutATerminal(t *testing.T) {
 	var out bytes.Buffer
-	ok, err := approve(strings.NewReader(""), &out, report(model.Counts{Update: 2}), false, false)
+	ok, err := approve(context.Background(), strings.NewReader(""), &out, report(model.Counts{Update: 2}), false, false)
 	if ok {
 		t.Fatal("an apply must never proceed unasked")
 	}
@@ -29,13 +32,13 @@ func TestApproveRefusesWithoutATerminal(t *testing.T) {
 func TestApproveNeedsExactlyYes(t *testing.T) {
 	for _, answer := range []string{"no\n", "y\n", "YES please\n", "\n", ""} {
 		var out bytes.Buffer
-		ok, _ := approve(strings.NewReader(answer), &out, report(model.Counts{Update: 2}), false, true)
+		ok, _ := approve(context.Background(), strings.NewReader(answer), &out, report(model.Counts{Update: 2}), false, true)
 		if ok {
 			t.Errorf("%q should not have been taken as consent", answer)
 		}
 	}
 	var out bytes.Buffer
-	ok, err := approve(strings.NewReader("yes\n"), &out, report(model.Counts{Update: 2}), false, true)
+	ok, err := approve(context.Background(), strings.NewReader("yes\n"), &out, report(model.Counts{Update: 2}), false, true)
 	if err != nil || !ok {
 		t.Errorf("a plain yes on a non-destructive plan should proceed: %v %v", ok, err)
 	}
@@ -46,7 +49,7 @@ func TestApproveAsksTwiceWhenDestructive(t *testing.T) {
 
 	// Saying yes once is not enough.
 	var out bytes.Buffer
-	if ok, _ := approve(strings.NewReader("yes\n"), &out, report(counts), false, true); ok {
+	if ok, _ := approve(context.Background(), strings.NewReader("yes\n"), &out, report(counts), false, true); ok {
 		t.Error("a destroy needs its own confirmation")
 	}
 	if !strings.Contains(out.String(), "destroyed or replaced") {
@@ -55,12 +58,12 @@ func TestApproveAsksTwiceWhenDestructive(t *testing.T) {
 
 	// The wrong second word is a refusal.
 	out.Reset()
-	if ok, _ := approve(strings.NewReader("yes\nyes\n"), &out, report(counts), false, true); ok {
+	if ok, _ := approve(context.Background(), strings.NewReader("yes\nyes\n"), &out, report(counts), false, true); ok {
 		t.Error("the second prompt asks for a specific word")
 	}
 
 	out.Reset()
-	ok, err := approve(strings.NewReader("yes\ndestroy\n"), &out, report(counts), false, true)
+	ok, err := approve(context.Background(), strings.NewReader("yes\ndestroy\n"), &out, report(counts), false, true)
 	if err != nil || !ok {
 		t.Errorf("yes then destroy should proceed: %v %v", ok, err)
 	}
@@ -68,7 +71,7 @@ func TestApproveAsksTwiceWhenDestructive(t *testing.T) {
 
 func TestAutoApproveSaysWhatItIsDestroying(t *testing.T) {
 	var out bytes.Buffer
-	ok, err := approve(strings.NewReader(""), &out, report(model.Counts{Delete: 3}), true, false)
+	ok, err := approve(context.Background(), strings.NewReader(""), &out, report(model.Counts{Delete: 3}), true, false)
 	if err != nil || !ok {
 		t.Fatalf("--auto-approve proceeds: %v %v", ok, err)
 	}
@@ -135,3 +138,30 @@ func TestErrorSurfacesWhenNoUnitWasBlamed(t *testing.T) {
 		t.Errorf("the error text is missing:\n%s", buf.String())
 	}
 }
+
+func TestApproveGivesUpWhenInterrupted(t *testing.T) {
+	// Ctrl-C during the prompt must stop the program, not be swallowed by a
+	// blocking read while the terminal echoes "^C".
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan bool, 1)
+	go func() {
+		ok, _ := approve(ctx, neverReads{}, io.Discard, report(model.Counts{Update: 1}), false, true)
+		done <- ok
+	}()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("an interrupted prompt is not consent")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("approve ignored the cancelled context and kept waiting")
+	}
+}
+
+// neverReads stands in for a terminal with nobody typing at it.
+type neverReads struct{}
+
+func (neverReads) Read([]byte) (int, error) { select {} }

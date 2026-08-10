@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +27,11 @@ type Progress struct {
 	Color   bool
 	// Verb names what the run is doing, for the status line.
 	Verb string
+	// Window is how many lines of live activity to show under the status line.
+	// Zero keeps the single line.
+	Window int
+	// Activity is what terraform is doing right now, if anyone is watching.
+	Activity *Activity
 
 	mu        sync.Mutex
 	units     map[string]bool
@@ -47,6 +54,9 @@ type Progress struct {
 	start      time.Time
 	lastBeat   time.Time
 	finished   bool
+	// drawn is how many activity lines are currently on screen, so they can be
+	// wiped before anything else is printed.
+	drawn int
 }
 
 // heartbeat is how often a non-tty run reports that it is still alive.
@@ -311,6 +321,12 @@ func (p *Progress) draw() {
 	if !p.tty {
 		return
 	}
+	// Collected before taking the lock: Activity has its own.
+	var window []string
+	if p.Window > 0 && p.Activity != nil {
+		window = p.Activity.Lines(p.Window, termWidth())
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.finished {
@@ -322,7 +338,51 @@ func (p *Progress) draw() {
 	if p.errors > 0 {
 		line += fmt.Sprintf(" · %s", p.red(fmt.Sprintf("%d failed", p.errors)))
 	}
-	fmt.Fprintf(p.w, "\r\033[2K%s", line)
+
+	p.wipe()
+	for _, l := range window {
+		fmt.Fprintf(p.w, "\033[2K%s\n", p.dim(l))
+	}
+	p.drawn = len(window)
+	fmt.Fprintf(p.w, "\033[2K%s\r", line)
+}
+
+// wipe erases the block drawn last time, leaving the cursor where it started.
+// Caller holds the lock.
+func (p *Progress) wipe() {
+	fmt.Fprint(p.w, "\r\033[2K")
+	for i := 0; i < p.drawn; i++ {
+		fmt.Fprint(p.w, "\033[1A\033[2K")
+	}
+	p.drawn = 0
+}
+
+// termWidth is how wide an activity line may be. A line that wraps breaks the
+// redraw, because the terminal counts the wrap as another row.
+func termWidth() int {
+	if c := os.Getenv("COLUMNS"); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n > 20 {
+			return n - 1
+		}
+	}
+	return 100
+}
+
+// WindowSize caps a requested window so it cannot fill the screen.
+func WindowSize(want int) int {
+	if want <= 0 {
+		return 0
+	}
+	height := 24
+	if l := os.Getenv("LINES"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 6 {
+			height = n
+		}
+	}
+	if max := height - 6; want > max {
+		return max
+	}
+	return want
 }
 
 func (p *Progress) tracking() bool {
@@ -332,9 +392,12 @@ func (p *Progress) tracking() bool {
 }
 
 func (p *Progress) clear() {
-	if p.tty {
-		fmt.Fprint(p.w, "\r\033[2K")
+	if !p.tty {
+		return
 	}
+	p.mu.Lock()
+	p.wipe()
+	p.mu.Unlock()
 }
 
 func countPlans(dir string) int {

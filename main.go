@@ -138,6 +138,7 @@ type commonFlags struct {
 	noColor    bool
 	timings    bool
 	showDrift  bool
+	window     int
 	format     string
 	engine     string
 	initFirst  bool
@@ -156,6 +157,7 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.noColor, "no-color", false, "disable color")
 	fs.BoolVar(&c.timings, "timings", false, "list the slowest units")
 	fs.BoolVar(&c.showDrift, "drift", false, "list drifted resources instead of counting them")
+	fs.IntVar(&c.window, "window", 10, "lines of live activity to show while running (0 for a single status line)")
 	fs.StringVar(&c.format, "format", "tty", "output format: tty, md, json or github (Actions annotations)")
 	fs.StringVar(&c.engine, "engine", "terragrunt", "what to drive: terragrunt, or terraform for a plain root module")
 	fs.BoolVar(&c.initFirst, "init", false, "run init before planning (terraform engine only)")
@@ -337,6 +339,8 @@ func cmdPlan(args []string) (int, error) {
 	color := useColor(cf.noColor)
 	prog := runner.NewProgress(os.Stderr, isTTY(os.Stderr), cf.verbose)
 	prog.Color = color
+	prog.Window = runner.WindowSize(cf.window)
+	prog.Activity = runner.NewActivity()
 
 	tfArgs := fs.Args()
 	if *fast && !hasRefreshFlag(tfArgs) {

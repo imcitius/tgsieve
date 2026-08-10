@@ -122,6 +122,15 @@ wording.
 
 ## Runner improvements
 
+- **The activity window is line-based.** It redraws in place with cursor moves
+  and assumes the terminal does not wrap, so it clips to `COLUMNS`. A resize
+  mid-run is not noticed until the next redraw, and a terminal narrower than
+  the clip still wraps. A real TUI layer would fix both and cost a dependency.
+- **Provisioner output is invisible.** `remote-exec` prints its own lines,
+  which the window recognises only as "provisioning"; the output itself is
+  dropped with the rest of the text.
+
+
 Done: queue size up front via `terragrunt find` (progress reads `7/28 planned ·
 4 running`), `--timings` with per-unit durations and wall time, first-class
 `--filter` / `--filter-affected` / `--parallelism`, graceful Ctrl-C (SIGINT is
