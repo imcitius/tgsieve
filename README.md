@@ -455,6 +455,25 @@ Each location a failure was reported from gets its own annotation, and the
 message drops the `at file:line` it carries, since the annotation already says
 where it is.
 
+## Version notice
+
+When a newer release exists, a run mentions it once at the end:
+
+```
+tgsieve 0.11.0 is available (you have 0.10.0) — brew upgrade --cask imcitius/tap/tgsieve
+```
+
+The lookup asks GitHub for the latest release tag, at most once a day, cached
+in `${XDG_CACHE_HOME:-~/.cache}/tgsieve/version-check.json`. It runs alongside
+the work rather than before it, and an answer that has not arrived by the time
+the command ends is simply used next time — a plan should never wait on
+github, nor fail because github is down.
+
+It stays quiet where it would be noise: outside a terminal (so CI logs and
+piped output are unaffected), on local builds, and on stdout, which belongs to
+the report. `TGSIEVE_NO_VERSION_CHECK=1` or `NO_UPDATE_NOTIFIER=1` turns it off
+entirely.
+
 ## Noise rules
 
 `tgsieve init` writes a starter file at the project root — the git root, or

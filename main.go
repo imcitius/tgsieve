@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/imcitius/tgsieve/internal/config"
 	"github.com/imcitius/tgsieve/internal/render"
 	"github.com/imcitius/tgsieve/internal/runner"
 	"github.com/imcitius/tgsieve/internal/sieve"
+	versioncheck "github.com/imcitius/tgsieve/internal/version"
 )
 
 // Overridden at release time via -ldflags -X main.version=… (see .goreleaser.yaml).
@@ -89,6 +91,13 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+
+	// Started before the work and read after it, so the lookup rides along
+	// with the run instead of delaying it.
+	started := time.Now()
+	checker := versioncheck.Start(context.Background(), version)
+	defer func() { reportNewVersion(checker, started) }()
+
 	var err error
 	var code int
 	switch os.Args[1] {
@@ -114,10 +123,33 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tgsieve: %v\n", err)
+		reportNewVersion(checker, started)
 		os.Exit(exitToolError)
 	}
+	reportNewVersion(checker, started)
 	os.Exit(code)
 }
+
+// reportNewVersion mentions a newer release once, quietly, on stderr — never
+// on stdout, where a machine-readable report lives.
+func reportNewVersion(c *versioncheck.Checker, started time.Time) {
+	if reported || !isTTY(os.Stderr) {
+		return
+	}
+	notice := c.Notice(versioncheck.Grace(time.Since(started)))
+	if notice == "" {
+		return
+	}
+	reported = true
+	if useColor(false) {
+		fmt.Fprintf(os.Stderr, "\n\033[2m%s\033[0m\n", notice)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\n%s\n", notice)
+}
+
+// reported keeps the notice to one appearance per run.
+var reported bool
 
 // stringList collects a flag that may be repeated.
 type stringList []string

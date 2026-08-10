@@ -192,6 +192,12 @@ reopening it:
 
 ## Packaging
 
+- **The version notice reads GitHub directly.** One request a day per machine,
+  unauthenticated, so a shared egress IP could in principle hit the rate limit
+  and the notice would quietly stop appearing. The Homebrew tap would be a
+  cheaper source for people who installed that way.
+
+
 Done: `.goreleaser.yaml` (darwin/linux × amd64/arm64, archives, checksums,
 Homebrew cask), release + CI workflows, version via ldflags.
 
