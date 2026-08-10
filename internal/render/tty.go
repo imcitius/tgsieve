@@ -84,7 +84,10 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 
 	if len(rep.ErroredUnits) > 0 {
 		fmt.Fprintf(w, "\n%s\n", p.bold(p.red(fmt.Sprintf("FAILED (%d)", len(rep.ErroredUnits)))))
-		if rep.TFPath != "" {
+		// Naming the binary only helps when the failure is the kind a wrong
+		// binary causes; otherwise it is one more line between the reader and
+		// the error.
+		if rep.TFPath != "" && binaryMightBeTheProblem(rep) {
 			who := "terragrunt ran " + rep.TFPath
 			if rep.Direct {
 				who = "ran " + rep.TFPath
@@ -97,10 +100,16 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 				scope = plural(len(g.Units), "unit") + ", same error"
 			}
 			note := ""
-			if g.Variants > 1 {
-				// One cause, worded differently per unit; the message shown is
-				// one real example of it.
-				note = p.dim(fmt.Sprintf("  (%d wordings, showing one)", g.Variants))
+			if g.Count > len(g.Units) {
+				// The same failure once per affected resource: the count is
+				// the news, the repetition is not.
+				note = p.dim(fmt.Sprintf("  ×%d", g.Count))
+			}
+			// Wording differences are only worth mentioning when they are not
+			// simply one per occurrence: "20 wordings" for 20 resources named
+			// in 20 messages tells the reader nothing.
+			if g.Variants > 1 && g.Variants < g.Count {
+				note += p.dim(fmt.Sprintf("  (%d wordings, showing one)", g.Variants))
 			}
 			fmt.Fprintf(w, "  %s %s%s\n", p.red("✗"), p.bold(scope), note)
 			if len(g.Units) > 1 {
@@ -347,6 +356,20 @@ func humanAge(d time.Duration) string {
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
+// binaryMightBeTheProblem spots the failures a mismatched terraform/tofu
+// produces: initialization, lock files and provider resolution.
+func binaryMightBeTheProblem(rep *sieve.Report) bool {
+	for _, g := range rep.Failures {
+		h := strings.ToLower(g.Headline)
+		for _, hint := range []string{"initialization required", "lock file", "backend", "provider requirements", "plugin"} {
+			if strings.Contains(h, hint) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func varyLabel(g sieve.Group) string {

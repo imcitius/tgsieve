@@ -156,13 +156,17 @@ func (r Resource) ValueShape() string {
 
 // Unit is one terragrunt unit (a directory with a terragrunt.hcl).
 type Unit struct {
-	Path      string        `json:"path"`
-	Resources []Resource    `json:"resources,omitempty"`
-	Outputs   []AttrChange  `json:"outputs,omitempty"`
-	Errored   bool          `json:"errored,omitempty"`
-	Error     string        `json:"error,omitempty"`
-	Duration  time.Duration `json:"duration,omitempty"`
-	Skipped   bool          `json:"skipped,omitempty"`
+	Path      string       `json:"path"`
+	Resources []Resource   `json:"resources,omitempty"`
+	Outputs   []AttrChange `json:"outputs,omitempty"`
+	Errored   bool         `json:"errored,omitempty"`
+	Error     string       `json:"error,omitempty"`
+	// Errors holds every diagnostic for this unit. One failure can produce
+	// hundreds — one per orphaned resource, say — and reporting only the first
+	// hides how big the problem is.
+	Errors   []string      `json:"errors,omitempty"`
+	Duration time.Duration `json:"duration,omitempty"`
+	Skipped  bool          `json:"skipped,omitempty"`
 	// Reused marks a unit whose plan came from an earlier invocation.
 	Reused bool `json:"reused,omitempty"`
 	// TimedAt is when a reused duration was measured.

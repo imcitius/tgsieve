@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/imcitius/tgsieve/internal/textutil"
 )
 
 var spinner = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
@@ -33,13 +35,18 @@ type Progress struct {
 	// track limits what counts towards progress. An apply visits every unit
 	// in the queue, but only the ones with changes are doing anything, and
 	// counting the rest makes a one-unit apply look like a stack-wide one.
-	track    map[string]bool
-	done     map[string]bool
-	errors   int
-	frame    int
-	start    time.Time
-	lastBeat time.Time
-	finished bool
+	track map[string]bool
+	done  map[string]bool
+	// seen counts each distinct kind of error, so a diagnostic repeated once
+	// per resource is announced once rather than scrolling the real output off
+	// the screen.
+	seen       map[string]int
+	suppressed int
+	errors     int
+	frame      int
+	start      time.Time
+	lastBeat   time.Time
+	finished   bool
 }
 
 // heartbeat is how often a non-tty run reports that it is still alive.
@@ -117,13 +124,39 @@ func (p *Progress) Unit(dir string) {
 	p.mu.Unlock()
 }
 
+// errorLine caps how much of a diagnostic the live feed shows. It is a
+// heads-up while the run is going; the report underneath carries the detail.
+const errorLine = 120
+
 func (p *Progress) Error(msg string) {
+	msg = strings.TrimSpace(msg)
 	p.mu.Lock()
 	p.errors++
+	if p.seen == nil {
+		p.seen = map[string]int{}
+	}
+	key := textutil.NormalizeError(textutil.Headline(msg))
+	p.seen[key]++
+	repeat := p.seen[key] > 1
+	if repeat {
+		p.suppressed++
+	}
 	p.mu.Unlock()
+	if repeat {
+		p.draw()
+		return
+	}
 	p.clear()
-	fmt.Fprintf(p.w, "%s %s\n", p.red("✗"), strings.TrimSpace(msg))
+	fmt.Fprintf(p.w, "%s %s\n", p.red("✗"), truncate(msg, errorLine))
 	p.draw()
+}
+
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func (p *Progress) Note(level, msg string) {
@@ -190,8 +223,17 @@ func (p *Progress) Watch(planDir string) chan struct{} {
 func (p *Progress) Done() {
 	p.mu.Lock()
 	p.finished = true
+	suppressed := p.suppressed
 	p.mu.Unlock()
 	p.clear()
+	if suppressed > 0 {
+		noun := "errors"
+		if suppressed == 1 {
+			noun = "error"
+		}
+		fmt.Fprintf(p.w, "%s\n", p.dim(fmt.Sprintf(
+			"  %d more %s of kinds already shown — see the report below", suppressed, noun)))
+	}
 }
 
 // pastVerb describes finished work: "applying" counts things applied. Caller

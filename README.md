@@ -239,6 +239,20 @@ FAILED (5)
       Error: no valid credential sources found
 ```
 
+The same holds inside a single unit. A removed provider configuration produces
+one diagnostic per orphaned resource, which terraform prints as forty
+paragraphs; the count is the news, so it is reported once with a number:
+
+```
+FAILED (1)
+  ✗ infra/networking  ×38
+      Error: Provider configuration not present: To work with module.peering-… (orphan)
+      its original provider configuration at provider["…/aws"].prod-euc1 is required…
+```
+
+While the run is in flight, each distinct kind of error is announced once and
+truncated to a line; repeats are counted and folded into the report.
+
 `--fail-on high` exits 2 only when something at that severity survived, so a
 pipeline can stop for a replacement without stopping for a new log group.
 Actions rank as `delete`/`replace` high, `update`/`drift` medium, `create` low,

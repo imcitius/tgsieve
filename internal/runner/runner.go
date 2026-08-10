@@ -213,7 +213,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if len(run.Units) == 0 && (res.ExitCode != 0 || len(res.Errors) > 0) {
 			run.Units = []model.Unit{{
 				Path: unitName(opts.Dir), Errored: true,
-				Error: firstErrorFor(unitName(opts.Dir), res.Errors),
+				Error:  firstErrorFor(unitName(opts.Dir), res.Errors),
+				Errors: res.Errors,
 			}}
 		}
 	} else {
@@ -421,6 +422,7 @@ func ensureUnit(run *model.Run, opts Options, res *Result) {
 	if res.ExitCode != 0 || len(res.Errors) > 0 {
 		u.Errored = true
 		u.Error = firstErrorFor(u.Path, res.Errors)
+		u.Errors = res.Errors
 	}
 	run.Units = append(run.Units, u)
 }
@@ -685,6 +687,9 @@ func applyReport(run *model.Run, reportFile string, errs []string, synthesize bo
 			if u.Error == "" {
 				u.Error = firstErrorFor(name, errs)
 			}
+			if len(u.Errors) == 0 {
+				u.Errors = allErrorsFor(name, errs)
+			}
 		}
 		if s, err1 := time.Parse(time.RFC3339Nano, e.Started); err1 == nil {
 			if t, err2 := time.Parse(time.RFC3339Nano, e.Ended); err2 == nil {
@@ -692,6 +697,20 @@ func applyReport(run *model.Run, reportFile string, errs []string, synthesize bo
 			}
 		}
 	}
+}
+
+// allErrorsFor collects every diagnostic naming a unit. A single failure can
+// repeat once per resource, and the count is part of the news.
+func allErrorsFor(unit string, errs []string) []string {
+	var out []string
+	for _, e := range errs {
+		for _, part := range textutil.SplitErrors(e) {
+			if strings.Contains(part, unit) || len(errs) == 1 {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
 
 // markInterrupted relabels units that were cut short by Ctrl-C. A unit that

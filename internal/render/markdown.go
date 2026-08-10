@@ -42,7 +42,11 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 		b.line(fmt.Sprintf("### Failed (%d)", len(rep.ErroredUnits)))
 		for _, g := range rep.Failures {
 			b.line("")
-			b.line(fmt.Sprintf("**%s**", strings.Join(g.Units, ", ")))
+			scope := strings.Join(g.Units, ", ")
+			if g.Count > len(g.Units) {
+				scope += fmt.Sprintf(" — ×%d", g.Count)
+			}
+			b.line(fmt.Sprintf("**%s**", scope))
 			b.line("")
 			b.line("```")
 			for _, line := range g.Detail {

@@ -108,6 +108,10 @@ type FailureGroup struct {
 	// Variants counts the distinct wordings folded into this group: the same
 	// cause reported against different resources or regions.
 	Variants int
+	// Count is how many times the failure was reported. One broken provider
+	// configuration can produce one diagnostic per orphaned resource, and the
+	// number is the news, not the repetition.
+	Count int
 }
 
 // UnitTiming is how long one unit took, for --timings.
@@ -518,28 +522,48 @@ func groupFailures(units []model.Unit) []FailureGroup {
 	var out []FailureGroup
 	index := map[string]int{}
 	wordings := map[int]map[string]bool{}
+	unitsIn := map[int]map[string]bool{}
 	for _, u := range units {
-		head := textutil.Headline(u.Error)
-		if head == "" {
-			head = "failed"
+		for _, msg := range unitErrors(u) {
+			head := textutil.Headline(msg)
+			if head == "" {
+				head = "failed"
+			}
+			key := textutil.NormalizeError(head)
+			i, ok := index[key]
+			if !ok {
+				i = len(out)
+				index[key] = i
+				wordings[i] = map[string]bool{}
+				unitsIn[i] = map[string]bool{}
+				out = append(out, FailureGroup{
+					Headline: head,
+					Detail:   textutil.CleanError(msg, 8),
+				})
+			}
+			if !unitsIn[i][u.Path] {
+				unitsIn[i][u.Path] = true
+				out[i].Units = append(out[i].Units, u.Path)
+			}
+			out[i].Count++
+			wordings[i][head] = true
+			out[i].Variants = len(wordings[i])
 		}
-		key := textutil.NormalizeError(head)
-		i, ok := index[key]
-		if !ok {
-			i = len(out)
-			index[key] = i
-			wordings[i] = map[string]bool{}
-			out = append(out, FailureGroup{
-				Headline: head,
-				Detail:   textutil.CleanError(u.Error, 8),
-			})
-		}
-		out[i].Units = append(out[i].Units, u.Path)
-		wordings[i][head] = true
-		out[i].Variants = len(wordings[i])
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i].Units) > len(out[j].Units) })
 	return out
+}
+
+// unitErrors returns every diagnostic recorded for a unit, falling back to the
+// single message when that is all there is.
+func unitErrors(u model.Unit) []string {
+	if len(u.Errors) > 0 {
+		return u.Errors
+	}
+	if u.Error != "" {
+		return []string{u.Error}
+	}
+	return []string{"failed"}
 }
 
 // varyingAttrs reports, for each attribute of the first member, whether the

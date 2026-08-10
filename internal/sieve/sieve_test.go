@@ -413,3 +413,43 @@ func TestDriftSeparatesRevertedFromLeft(t *testing.T) {
 		t.Fatalf("the two kinds of drift must not collapse together: %d groups", len(rep.Groups))
 	}
 }
+
+func TestOneCauseRepeatedPerResourceIsCountedNotRepeated(t *testing.T) {
+	// A removed provider configuration produces one diagnostic per orphaned
+	// resource. Printing them all is the wall of text this tool exists to
+	// prevent; printing only the first hides the scale.
+	var errs []string
+	for _, addr := range []string{"module.a.aws_route.x", "module.b.aws_route.y", "module.c.aws_vpc.z"} {
+		errs = append(errs, "Error: Provider configuration not present: To work with "+addr+
+			" (orphan) its original provider configuration is required, but it has been removed.")
+	}
+	run := model.Run{Units: []model.Unit{{Path: "infra/networking", Errored: true, Error: errs[0], Errors: errs}}}
+
+	rep := Apply(run, config.Default())
+	if len(rep.Failures) != 1 {
+		t.Fatalf("one cause should make one group, got %d: %+v", len(rep.Failures), rep.Failures)
+	}
+	g := rep.Failures[0]
+	if g.Count != 3 {
+		t.Errorf("Count = %d, want 3", g.Count)
+	}
+	if len(g.Units) != 1 || g.Units[0] != "infra/networking" {
+		t.Errorf("Units = %v", g.Units)
+	}
+	if len(g.Detail) == 0 {
+		t.Error("one example of the message should survive")
+	}
+}
+
+func TestSeparateCausesInOneUnitStayApart(t *testing.T) {
+	errs := []string{
+		"Error: Provider configuration not present: To work with module.a.aws_route.x (orphan) …",
+		"Error: Unsupported argument: An argument named \"foo\" is not expected here.",
+	}
+	run := model.Run{Units: []model.Unit{{Path: "u", Errored: true, Error: errs[0], Errors: errs}}}
+
+	rep := Apply(run, config.Default())
+	if len(rep.Failures) != 2 {
+		t.Fatalf("two causes, two groups; got %d: %+v", len(rep.Failures), rep.Failures)
+	}
+}
