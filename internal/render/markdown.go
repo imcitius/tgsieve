@@ -53,6 +53,15 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 				b.line(line)
 			}
 			b.line("```")
+			if rest := others(g.Locations, g.Detail); len(rest) > 0 {
+				shown, extra := capList(rest, opts.MaxUnits)
+				line := "also at `" + strings.Join(shown, "`, `") + "`"
+				if extra > 0 {
+					line += fmt.Sprintf(", +%d more", extra)
+				}
+				b.line("")
+				b.line(line)
+			}
 		}
 	}
 

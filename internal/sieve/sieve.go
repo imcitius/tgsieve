@@ -112,6 +112,10 @@ type FailureGroup struct {
 	// configuration can produce one diagnostic per orphaned resource, and the
 	// number is the news, not the repetition.
 	Count int
+	// Locations are the distinct places the failure was reported from. Five
+	// diagnostics sharing a message but naming five different lines are five
+	// things to fix, and folding them without the lines would hide the work.
+	Locations []string
 }
 
 // UnitTiming is how long one unit took, for --timings.
@@ -523,6 +527,7 @@ func groupFailures(units []model.Unit) []FailureGroup {
 	index := map[string]int{}
 	wordings := map[int]map[string]bool{}
 	unitsIn := map[int]map[string]bool{}
+	seenLoc := map[int]map[string]bool{}
 	for _, u := range units {
 		for _, msg := range unitErrors(u) {
 			head := textutil.Headline(msg)
@@ -536,6 +541,7 @@ func groupFailures(units []model.Unit) []FailureGroup {
 				index[key] = i
 				wordings[i] = map[string]bool{}
 				unitsIn[i] = map[string]bool{}
+				seenLoc[i] = map[string]bool{}
 				out = append(out, FailureGroup{
 					Headline: head,
 					Detail:   textutil.CleanError(msg, 8),
@@ -545,13 +551,48 @@ func groupFailures(units []model.Unit) []FailureGroup {
 				unitsIn[i][u.Path] = true
 				out[i].Units = append(out[i].Units, u.Path)
 			}
+			if loc := textutil.Location(msg); loc != "" && !seenLoc[i][loc] {
+				if seenLoc[i] == nil {
+					seenLoc[i] = map[string]bool{}
+				}
+				seenLoc[i][loc] = true
+				out[i].Locations = append(out[i].Locations, loc)
+			}
 			out[i].Count++
 			wordings[i][head] = true
 			out[i].Variants = len(wordings[i])
 		}
 	}
+	for i := range out {
+		sortLocations(out[i].Locations)
+	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i].Units) > len(out[j].Units) })
 	return out
+}
+
+// sortLocations orders file:line references the way someone reads a file:
+// grouped by name, ascending by line.
+func sortLocations(locs []string) {
+	sort.SliceStable(locs, func(i, j int) bool {
+		fi, li := splitLocation(locs[i])
+		fj, lj := splitLocation(locs[j])
+		if fi != fj {
+			return fi < fj
+		}
+		return li < lj
+	})
+}
+
+func splitLocation(loc string) (string, int) {
+	i := strings.LastIndex(loc, ":")
+	if i < 0 {
+		return loc, 0
+	}
+	n, err := strconv.Atoi(loc[i+1:])
+	if err != nil {
+		return loc, 0
+	}
+	return loc[:i], n
 }
 
 // unitErrors returns every diagnostic recorded for a unit, falling back to the

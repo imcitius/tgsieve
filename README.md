@@ -250,6 +250,20 @@ FAILED (1)
       its original provider configuration at provider["…/aws"].prod-euc1 is required…
 ```
 
+Folding never drops where the problem is. Diagnostics that share a message but
+name different lines list those lines, along with the offending source:
+
+```
+FAILED (1)
+  ✗ infra/networking  ×5
+      Error: Unsupported attribute at modules-vpcs.tf:72: This object does not have
+      an attribute named "cyclops-preprod".
+      in module "vpc-cyclops-preprod"
+      72:   local_cidr_block  = local.vpcs.cyclops-preprod.network_cidr
+      local.vpcs is object with 6 attributes
+      also at modules-vpcs.tf:73, modules-vpcs.tf:76, modules-vpcs.tf:79
+```
+
 While the run is in flight, each distinct kind of error is announced once and
 truncated to a line; repeats are counted and folded into the report.
 

@@ -115,3 +115,16 @@ func TestNormalizeErrorFoldsIncidentalDifferences(t *testing.T) {
 		t.Error("genuinely different errors must stay apart")
 	}
 }
+
+func TestLocationFindsBothWordings(t *testing.T) {
+	cases := map[string]string{
+		`Error: Unsupported attribute at modules-vpcs.tf:72: This object does not…`: "modules-vpcs.tf:72",
+		"Error: Invalid value\n  on main.tf line 12, in module \"x\":":              "main.tf:12",
+		"Error: something with no location at all":                                  "",
+	}
+	for in, want := range cases {
+		if got := Location(in); got != want {
+			t.Errorf("Location(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

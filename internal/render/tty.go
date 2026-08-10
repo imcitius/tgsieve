@@ -128,6 +128,15 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 			for _, line := range g.Detail {
 				fmt.Fprintf(w, "      %s\n", p.dim(line))
 			}
+			// The same message from several places is several things to fix.
+			if rest := others(g.Locations, g.Detail); len(rest) > 0 {
+				shown, extra := capList(rest, opts.MaxUnits)
+				line := "also at " + strings.Join(shown, ", ")
+				if extra > 0 {
+					line += fmt.Sprintf(", +%d more", extra)
+				}
+				fmt.Fprintf(w, "      %s\n", p.dim(line))
+			}
 		}
 	}
 
@@ -356,6 +365,28 @@ func humanAge(d time.Duration) string {
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
+// others drops the location already visible in the shown message, so the list
+// says what the reader cannot already see.
+func others(locations []string, detail []string) []string {
+	shown := strings.Join(detail, "\n")
+	out := make([]string, 0, len(locations))
+	for _, loc := range locations {
+		if strings.Contains(shown, loc) {
+			continue
+		}
+		out = append(out, loc)
+	}
+	return out
+}
+
+// capList truncates a list, returning what to show and how many were left out.
+func capList(items []string, max int) ([]string, int) {
+	if max <= 0 || len(items) <= max {
+		return items, 0
+	}
+	return items[:max], len(items) - max
 }
 
 // binaryMightBeTheProblem spots the failures a mismatched terraform/tofu

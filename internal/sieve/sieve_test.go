@@ -1,6 +1,7 @@
 package sieve
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -451,5 +452,34 @@ func TestSeparateCausesInOneUnitStayApart(t *testing.T) {
 	rep := Apply(run, config.Default())
 	if len(rep.Failures) != 2 {
 		t.Fatalf("two causes, two groups; got %d: %+v", len(rep.Failures), rep.Failures)
+	}
+}
+
+func TestOneMessageFromSeveralPlacesKeepsThePlaces(t *testing.T) {
+	// The wall of text this replaces is five identical messages; the part that
+	// differs — and the part someone acts on — is the line number.
+	var errs []string
+	for _, line := range []int{80, 72, 76} {
+		errs = append(errs, fmt.Sprintf(
+			"Error: Unsupported attribute at modules-vpcs.tf:%d: This object does not have an attribute named \"cyclops-preprod\".\n  %d:   local_cidr_block = local.vpcs.cyclops-preprod.network_cidr", line, line))
+	}
+	run := model.Run{Units: []model.Unit{{Path: "infra/networking", Errored: true, Error: errs[0], Errors: errs}}}
+
+	rep := Apply(run, config.Default())
+	if len(rep.Failures) != 1 {
+		t.Fatalf("one message, one group: %+v", rep.Failures)
+	}
+	g := rep.Failures[0]
+	if g.Count != 3 {
+		t.Errorf("Count = %d, want 3", g.Count)
+	}
+	want := []string{"modules-vpcs.tf:72", "modules-vpcs.tf:76", "modules-vpcs.tf:80"}
+	if len(g.Locations) != 3 {
+		t.Fatalf("Locations = %v, want 3 sorted by line", g.Locations)
+	}
+	for i, w := range want {
+		if g.Locations[i] != w {
+			t.Errorf("Locations[%d] = %q, want %q (sorted by line)", i, g.Locations[i], w)
+		}
 	}
 }

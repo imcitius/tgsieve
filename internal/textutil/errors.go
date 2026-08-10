@@ -101,6 +101,22 @@ func CleanError(s string, max int) []string {
 	return lines
 }
 
+var locationRe = regexp.MustCompile(`\bat ([^\s:]+:\d+)`)
+
+// Location pulls "file:line" out of a diagnostic, so failures that share a
+// message but differ in where they happen can be listed rather than collapsed
+// into one another.
+func Location(s string) string {
+	if m := locationRe.FindStringSubmatch(StripANSI(s)); m != nil {
+		return m[1]
+	}
+	// terraform's text output words it differently.
+	if m := regexp.MustCompile(`on (\S+) line (\d+)`).FindStringSubmatch(StripANSI(s)); m != nil {
+		return m[1] + ":" + m[2]
+	}
+	return ""
+}
+
 // Headline is the single most informative line of an error blob, for the live
 // progress feed where a 30-line dump would bury everything else.
 func Headline(s string) string {

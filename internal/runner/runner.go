@@ -92,6 +92,24 @@ type TFEvent struct {
 		Severity string `json:"severity"`
 		Summary  string `json:"summary"`
 		Detail   string `json:"detail"`
+		// Range and Snippet carry where the problem is. Five diagnostics that
+		// share a summary and differ only by line are five different things to
+		// fix, and the line is the part a reader acts on.
+		Range struct {
+			Filename string `json:"filename"`
+			Start    struct {
+				Line int `json:"line"`
+			} `json:"start"`
+		} `json:"range"`
+		Snippet struct {
+			Context   string `json:"context"`
+			Code      string `json:"code"`
+			StartLine int    `json:"start_line"`
+			Values    []struct {
+				Traversal string `json:"traversal"`
+				Statement string `json:"statement"`
+			} `json:"values"`
+		} `json:"snippet"`
 	} `json:"diagnostic"`
 }
 
@@ -728,6 +746,37 @@ func markInterrupted(run *model.Run) {
 	}
 }
 
+// formatDiagnostic renders one terraform diagnostic with the context that
+// makes it actionable: what went wrong, where, and the line it went wrong on.
+func formatDiagnostic(ev TFEvent) string {
+	d := ev.Diagnostic
+	head := "Error: " + strings.TrimSpace(d.Summary)
+	if d.Range.Filename != "" {
+		head += fmt.Sprintf(" at %s:%d", d.Range.Filename, d.Range.Start.Line)
+	}
+	if detail := strings.TrimSpace(d.Detail); detail != "" {
+		head += ": " + detail
+	}
+
+	lines := []string{head}
+	if ctx := strings.TrimSpace(d.Snippet.Context); ctx != "" {
+		lines = append(lines, "  in "+ctx)
+	}
+	if code := strings.TrimSpace(d.Snippet.Code); code != "" {
+		line := d.Snippet.StartLine
+		if line == 0 {
+			line = d.Range.Start.Line
+		}
+		lines = append(lines, fmt.Sprintf("  %d: %s", line, code))
+	}
+	for _, v := range d.Snippet.Values {
+		if v.Traversal != "" {
+			lines = append(lines, "  "+strings.TrimSpace(v.Traversal+" "+v.Statement))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // unitFinished spots terraform announcing that it is done with a unit. There
 // is no structured signal for this in a stack run: the report is only written
 // at the very end.
@@ -759,7 +808,7 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 		}
 	case "diagnostic":
 		if ev.Diagnostic.Severity == "error" {
-			msg := "Error: " + strings.TrimSpace(ev.Diagnostic.Summary+": "+ev.Diagnostic.Detail)
+			msg := formatDiagnostic(ev)
 			res.Errors = append(res.Errors, msg)
 			if opts.Progress != nil {
 				opts.Progress.Error(textutil.Headline(msg))
