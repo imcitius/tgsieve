@@ -163,6 +163,16 @@ func (d *differ) walkSlice(path string, before, after []any) {
 	// position is an implementation detail, and "the second rule was renamed"
 	// is a story about indices rather than about infrastructure.
 	pairs, removed, added := pairByIdentity(removed, added)
+
+	// No identity, but one object left and one nearly identical object
+	// arrived: that is an edit. Reporting it as a removal and an addition
+	// prints two whole objects and leaves the reader to find the field that
+	// changed, which for a security group rule is a wall of JSON.
+	if len(pairs) == 0 && len(removed) == 1 && len(added) == 1 && similarObjects(removed[0], added[0]) {
+		d.walk(path, removed[0], added[0])
+		return
+	}
+
 	if len(pairs) == 0 && !preferMembership(before, after, len(removed)+len(added)) {
 		d.walkByIndex(path, before, after)
 		return
@@ -234,6 +244,39 @@ func pairByIdentity(removed, added []any) ([]identityPair, []any, []any) {
 		return nil, removed, added
 	}
 	return pairs, leftoverRemoved, leftoverAdded
+}
+
+// similarObjects reports whether two objects look like one thing edited rather
+// than one thing swapped for another: most of their fields agree, and at least
+// one does not.
+func similarObjects(a, b any) bool {
+	am, ok := a.(map[string]any)
+	if !ok {
+		return false
+	}
+	bm, ok := b.(map[string]any)
+	if !ok {
+		return false
+	}
+	keys := map[string]bool{}
+	for k := range am {
+		keys[k] = true
+	}
+	for k := range bm {
+		keys[k] = true
+	}
+	if len(keys) == 0 {
+		return false
+	}
+	same, differing := 0, 0
+	for k := range keys {
+		if equalValue(am[k], bm[k]) {
+			same++
+		} else {
+			differing++
+		}
+	}
+	return differing > 0 && same > differing
 }
 
 // commonIdentity finds a field every object on both sides carries, and which

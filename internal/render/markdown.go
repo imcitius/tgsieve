@@ -272,6 +272,10 @@ func mdValue(a model.AttrChange, max int) string {
 	if a.Sensitive {
 		before = "_(sensitive)_"
 	}
+	if !a.Sensitive && !a.AfterUnknown && a.Before != nil {
+		b, aft := diffView(fmtVal(a.Before, 0), fmtVal(a.After, 0), max)
+		before, after = "`"+mdCode(b)+"`", "`"+mdCode(aft)+"`"
+	}
 	return before + " → " + after
 }
 

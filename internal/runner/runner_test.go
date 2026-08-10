@@ -642,3 +642,18 @@ func TestDirectOptionsAreRecognised(t *testing.T) {
 		t.Error("the terraform engine should be recognised")
 	}
 }
+
+func TestDirectApplyFailureKeepsTheReason(t *testing.T) {
+	// A failed apply that reports only "failed" sends the reader back to
+	// scrollback for the error the tool already had in hand.
+	res := &Result{ExitCode: 1, Errors: []string{
+		"Error: updating EKS Node Group (eks-cluster-ctrl-tests:ondemand) config: operation error EKS: UpdateNodegroupConfig",
+	}}
+	got := firstErrorFor("terraform/live/ctrl/tests/eks", res.Errors)
+	if got == failedPlaceholder || got == "" {
+		t.Fatalf("the error should survive even when it does not name the unit: %q", got)
+	}
+	if !strings.Contains(got, "UpdateNodegroupConfig") {
+		t.Errorf("wrong error picked: %q", got)
+	}
+}

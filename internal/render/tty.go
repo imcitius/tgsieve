@@ -37,8 +37,8 @@ func (o Options) withDefaults() Options {
 	if o.MaxUnits == 0 {
 		o.MaxUnits = 6
 	}
-	if o.MaxValue == 0 {
-		o.MaxValue = 72
+	if o.MaxValue < 0 {
+		o.MaxValue = 0 // negative means the caller wants no limit either
 	}
 	if o.MaxTimings == 0 {
 		o.MaxTimings = 10
@@ -455,7 +455,58 @@ func renderValue(p painter, a model.AttrChange, max int) string {
 	if a.Sensitive {
 		before = "(sensitive)"
 	}
-	return p.red(before) + p.dim(" → ") + after
+	if !a.Sensitive && !a.AfterUnknown && a.Before != nil {
+		// Cutting both values at the same offset hides the difference when it
+		// is past that offset — which is where it usually is, since the values
+		// start out identical.
+		before, after = diffView(fmtVal(a.Before, 0), fmtVal(a.After, 0), max)
+		before, after = p.red(before), p.green(after)
+	}
+	return before + p.dim(" → ") + after
+}
+
+// diffView trims two values around the point where they stop agreeing, so a
+// long value shows what changed rather than its first few dozen characters.
+func diffView(before, after string, max int) (string, string) {
+	if max <= 0 || (len(before) <= max && len(after) <= max) {
+		return before, after
+	}
+	b, a := []rune(before), []rune(after)
+
+	p := 0
+	for p < len(b) && p < len(a) && b[p] == a[p] {
+		p++
+	}
+	s := 0
+	for s < len(b)-p && s < len(a)-p && b[len(b)-1-s] == a[len(a)-1-s] {
+		s++
+	}
+
+	const context = 12
+	start := p - context
+	if start < 0 {
+		start = 0
+	}
+	return window(b, start, max), window(a, start, max)
+}
+
+// window cuts one value, marking each end it had to cut.
+func window(r []rune, start, max int) string {
+	if start >= len(r) {
+		start = 0
+	}
+	end := start + max
+	if end > len(r) {
+		end = len(r)
+	}
+	out := string(r[start:end])
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(r) {
+		out += "…"
+	}
+	return out
 }
 
 func fmtVal(v any, max int) string {
@@ -464,6 +515,13 @@ func fmtVal(v any, max int) string {
 	case nil:
 		return "null"
 	case string:
+		// A policy document is JSON inside a string, and quoting it again
+		// escapes every quote it contains. Showing the document itself is what
+		// the reader is trying to compare.
+		if inner, ok := embeddedJSON(t); ok {
+			s = inner
+			break
+		}
 		s = strconv_Quote(t)
 	case float64:
 		if t == float64(int64(t)) {
@@ -482,10 +540,27 @@ func fmtVal(v any, max int) string {
 		}
 	}
 	s = strings.ReplaceAll(s, "\\n", "↵")
-	if len(s) > max {
+	if max > 0 && len(s) > max {
 		s = s[:max-1] + "…"
 	}
 	return s
+}
+
+// embeddedJSON unwraps a string that is itself a JSON document.
+func embeddedJSON(s string) (string, bool) {
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) < 2 || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return "", false
+	}
+	var v any
+	if err := json.Unmarshal([]byte(trimmed), &v); err != nil {
+		return "", false
+	}
+	compact, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(compact), true
 }
 
 func strconv_Quote(s string) string {

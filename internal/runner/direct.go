@@ -69,7 +69,14 @@ func runDirect(ctx context.Context, opts Options, planDir string, res *Result) e
 		if err := directCmd(ctx, opts, bin, res, []string{"apply", "-input=false", "-json", planFile}); err != nil {
 			return err
 		}
-		res.Run.Units = []model.Unit{{Path: unit, Duration: time.Since(started), Errored: res.ExitCode != 0}}
+		u := model.Unit{Path: unit, Duration: time.Since(started), Errored: res.ExitCode != 0}
+		if u.Errored {
+			// Without this the report says only "failed", while the reason
+			// terraform gave scrolls past in the live feed and is lost.
+			u.Error = firstErrorFor(unit, res.Errors)
+			u.Errors = res.Errors
+		}
+		res.Run.Units = []model.Unit{u}
 		return nil
 	}
 

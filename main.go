@@ -145,6 +145,7 @@ type commonFlags struct {
 	maxBytes   int
 	maxAttrs   int
 	maxUnits   int
+	maxValue   int
 }
 
 func (c *commonFlags) bind(fs *flag.FlagSet) {
@@ -164,6 +165,7 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.IntVar(&c.maxBytes, "max-bytes", render.DefaultMaxBytes, "size limit for markdown output")
 	fs.IntVar(&c.maxAttrs, "max-attrs", 12, "max attributes shown per resource")
 	fs.IntVar(&c.maxUnits, "max-units", 6, "max unit names listed per collapsed group")
+	fs.IntVar(&c.maxValue, "max-value", 72, "max characters shown per value (0 for no limit)")
 }
 
 func (c *commonFlags) renderOpts() render.Options {
@@ -176,6 +178,7 @@ func (c *commonFlags) renderOpts() render.Options {
 		ShowDrift: c.showDrift,
 		MaxAttrs:  c.maxAttrs,
 		MaxUnits:  c.maxUnits,
+		MaxValue:  c.maxValue,
 		MaxBytes:  c.maxBytes,
 	}
 }

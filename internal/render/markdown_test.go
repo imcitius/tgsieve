@@ -123,3 +123,46 @@ func TestMarkdownFilesReadsSeparatelyFromCreates(t *testing.T) {
 		t.Errorf("reads deserve their own section:\n%s", got)
 	}
 }
+
+func TestValuesAreTrimmedAroundTheDifference(t *testing.T) {
+	// The values start out identical, so cutting at a fixed offset shows the
+	// part that did not change and hides the part that did.
+	before := strings.Repeat("x", 200) + "GetObject" + strings.Repeat("y", 200)
+	after := strings.Repeat("x", 200) + "DeleteObject" + strings.Repeat("y", 200)
+
+	b, a := diffView(before, after, 60)
+	if !strings.Contains(b, "GetObject") {
+		t.Errorf("the difference is missing from the old value: %q", b)
+	}
+	if !strings.Contains(a, "DeleteObject") {
+		t.Errorf("the difference is missing from the new value: %q", a)
+	}
+	if len([]rune(b)) > 62 || len([]rune(a)) > 62 {
+		t.Errorf("the budget was ignored: %d and %d runes", len([]rune(b)), len([]rune(a)))
+	}
+}
+
+func TestNoLimitShowsEverything(t *testing.T) {
+	long := strings.Repeat("a", 500)
+	b, a := diffView(long+"1", long+"2", 0)
+	if len(b) != 501 || len(a) != 501 {
+		t.Errorf("--max-value 0 should not trim: %d, %d", len(b), len(a))
+	}
+}
+
+func TestEmbeddedJSONIsUnwrapped(t *testing.T) {
+	// A policy document is JSON inside a string; quoting it again escapes
+	// every quote it contains.
+	got := fmtVal(`{"Version":"2012-10-17","Statement":[]}`, 0)
+	if strings.Contains(got, `\"`) {
+		t.Errorf("escaped quotes survived: %s", got)
+	}
+	if !strings.HasPrefix(got, "{") {
+		t.Errorf("not unwrapped: %s", got)
+	}
+	// Ordinary strings keep their quotes, so a value is never confused with a
+	// bare word.
+	if got := fmtVal("plain", 0); got != `"plain"` {
+		t.Errorf("fmtVal(plain) = %s", got)
+	}
+}

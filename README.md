@@ -131,10 +131,17 @@ tgsieve apply --all --plans ./plans
 Those plans carry the provenance described below, so an apply against code that
 has moved on is refused rather than applied.
 
+Long values are trimmed **around the difference**, not from the start — two
+values that share a 200-character prefix would otherwise show that prefix
+twice and hide what changed. `--max-value 0` prints them in full. A string that
+is itself a JSON document (an IAM policy, say) is shown as that document
+rather than as an escaped string.
+
 Useful flags: `-v` (attributes for creates and destroys too), `--show-empty`,
 `--explain`, `--timings` (slowest units), `--no-sieve`, `--no-color`,
-`--max-attrs`, `--max-units`, `--out-dir` (keep binary plans so you can apply
-exactly what you reviewed), `--tg-args` (pass extra flags to terragrunt).
+`--max-attrs`, `--max-units`, `--max-value`, `--window` (live activity lines),
+`--out-dir` (keep binary plans so you can apply exactly what you reviewed),
+`--tg-args` (pass extra flags to terragrunt).
 
 Scoping and pacing a stack run: `--filter <query>` (repeatable),
 `--filter-affected` (only units touched between `main` and `HEAD`) and

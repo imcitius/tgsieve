@@ -378,3 +378,45 @@ func TestPairedObjectAndLeftoverTogether(t *testing.T) {
 		t.Errorf("want one edit, one removal and one addition; got %d/%d/%d", edited, removed, added)
 	}
 }
+
+func TestOneEditedObjectWithoutIdentityReadsAsAnEdit(t *testing.T) {
+	// A security group rule with no id or name, one field changed. Reporting a
+	// removal and an addition means printing two whole objects.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"ingress": [
+	    {"cidr_blocks": [], "description": "Node to node 443", "from_port": 443, "to_port": 443, "protocol": "tcp"}
+	  ]},
+	  "after": {"ingress": [
+	    {"cidr_blocks": [], "description": "VPN https access all protocols", "from_port": 443, "to_port": 443, "protocol": "tcp"}
+	  ]}
+	}`)
+
+	attrs := Diff(ch)
+	if len(attrs) != 1 {
+		t.Fatalf("want the one changed field, got %d: %+v", len(attrs), attrs)
+	}
+	if attrs[0].Path != "ingress.0.description" && attrs[0].Path != "ingress.description" {
+		t.Errorf("path = %q, want the description field", attrs[0].Path)
+	}
+	if attrs[0].Before != "Node to node 443" || attrs[0].After != "VPN https access all protocols" {
+		t.Errorf("values = %v -> %v", attrs[0].Before, attrs[0].After)
+	}
+}
+
+func TestASwapIsNotAnEdit(t *testing.T) {
+	// Nothing in common: one object left and a different one arrived.
+	ch := changeFrom(t, `{
+	  "actions": ["update"],
+	  "before": {"rules": [{"from": 1, "to": 2}, {"from": 3, "to": 4}]},
+	  "after":  {"rules": [{"from": 3, "to": 4}, {"from": 5, "to": 6}]}
+	}`)
+
+	kinds := map[string]int{}
+	for _, a := range Diff(ch) {
+		kinds[a.Kind]++
+	}
+	if kinds[model.KindRemoved] != 1 || kinds[model.KindAdded] != 1 {
+		t.Errorf("want a removal and an addition, got %v", kinds)
+	}
+}
