@@ -550,3 +550,67 @@ func TestFingerprintGeneratedUnitsChangesWithTheirContent(t *testing.T) {
 		t.Errorf("a project without generated units has nothing to fingerprint, got %q", got)
 	}
 }
+
+func TestProgressTracksOnlyTheUnitsDoingWork(t *testing.T) {
+	// An apply visits the whole queue but most units have nothing to do;
+	// counting them makes a one-unit apply look stack-wide.
+	p := NewProgress(os.Stderr, false, false)
+	p.Verb = "applying"
+	p.SetTotal(23)
+	p.Track([]string{"monitoring/robusta"})
+
+	if got := p.progressLabel(); got != "0/1 applied" {
+		t.Fatalf("label = %q, want 0/1 applied", got)
+	}
+
+	// Units outside the set do not move the counter, however noisy they are.
+	p.Unit("s3/other")
+	p.UnitDone("s3/other")
+	if got := p.progressLabel(); got != "0/1 applied" {
+		t.Errorf("an untracked unit changed the count: %q", got)
+	}
+
+	p.UnitDone("monitoring/robusta")
+	if got := p.progressLabel(); got != "1/1 applied" {
+		t.Errorf("label = %q, want 1/1 applied", got)
+	}
+}
+
+func TestProgressAttributesASingleUnitRunWithNoWorkingDir(t *testing.T) {
+	// terragrunt does not name the working directory of a single-unit run.
+	p := NewProgress(os.Stderr, false, false)
+	p.Verb = "applying"
+	p.Track([]string{"envs/prod/a"})
+	p.UnitDone("")
+	if got := p.progressLabel(); got != "1/1 applied" {
+		t.Errorf("label = %q, want 1/1 applied", got)
+	}
+}
+
+func TestUnitFinishedRecognisesTerraformsClosingLines(t *testing.T) {
+	for _, msg := range []string{
+		"Apply complete! Resources: 1 added, 0 changed, 0 destroyed.",
+		"Destroy complete! Resources: 3 destroyed.",
+		"No changes. Infrastructure is up-to-date.",
+	} {
+		if !unitFinished(msg) {
+			t.Errorf("should count as finished: %q", msg)
+		}
+	}
+	if unitFinished("Plan: 1 to add, 0 to change, 0 to destroy.") {
+		t.Error("a plan summary is not a finished apply")
+	}
+}
+
+func TestTrackedTotalSurvivesTheQueueMeasurement(t *testing.T) {
+	// Run measures the queue and calls SetTotal after the caller has already
+	// said which units matter; the queue must not overwrite that.
+	p := NewProgress(os.Stderr, false, false)
+	p.Verb = "applying"
+	p.Track([]string{"monitoring/robusta"})
+	p.SetTotal(23)
+
+	if got := p.progressLabel(); got != "0/1 applied" {
+		t.Errorf("label = %q, want 0/1 applied", got)
+	}
+}

@@ -520,9 +520,13 @@ func stream(ctx context.Context, opts Options, res *Result, args []string) error
 					opts.Progress.Error(head)
 				}
 			case "stdout", "stderr":
-				// The wall of terraform text we exist to replace.
+				// The wall of terraform text we exist to replace — except for
+				// the one line that says a unit finished.
 				if opts.Progress != nil {
 					opts.Progress.Unit(ll.WorkingDir)
+					if unitFinished(ll.Msg) {
+						opts.Progress.UnitDone(ll.WorkingDir)
+					}
 				}
 			default:
 				if opts.Progress != nil {
@@ -658,6 +662,15 @@ func markInterrupted(run *model.Run) {
 			u.Error = "interrupted"
 		}
 	}
+}
+
+// unitFinished spots terraform announcing that it is done with a unit. There
+// is no structured signal for this in a stack run: the report is only written
+// at the very end.
+func unitFinished(msg string) bool {
+	return strings.Contains(msg, "Apply complete!") ||
+		strings.Contains(msg, "Destroy complete!") ||
+		strings.Contains(msg, "No changes. Infrastructure is up-to-date")
 }
 
 // handleTFEvent feeds terraform's own progress events into the display and

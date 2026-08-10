@@ -30,11 +30,16 @@ type Progress struct {
 	planned   int
 	refreshed int
 	resources int
-	errors    int
-	frame     int
-	start     time.Time
-	lastBeat  time.Time
-	finished  bool
+	// track limits what counts towards progress. An apply visits every unit
+	// in the queue, but only the ones with changes are doing anything, and
+	// counting the rest makes a one-unit apply look like a stack-wide one.
+	track    map[string]bool
+	done     map[string]bool
+	errors   int
+	frame    int
+	start    time.Time
+	lastBeat time.Time
+	finished bool
 }
 
 // heartbeat is how often a non-tty run reports that it is still alive.
@@ -54,11 +59,48 @@ func (p *Progress) PlannedResource() {
 	p.mu.Unlock()
 }
 
-// SetTotal records how many units the run is expected to cover.
+// SetTotal records how many units the run is expected to cover. A tracked set
+// wins: the caller knew which units matter before the queue was measured, and
+// the queue includes everything the run merely walks past.
 func (p *Progress) SetTotal(n int) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.track != nil {
+		return
+	}
 	p.total = n
-	p.mu.Unlock()
+}
+
+// Track narrows progress to a known set of units and makes their count the
+// total, for phases where most of the queue has nothing to do.
+func (p *Progress) Track(units []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.track = make(map[string]bool, len(units))
+	for _, u := range units {
+		p.track[u] = true
+	}
+	p.done = map[string]bool{}
+	p.total = len(units)
+}
+
+// UnitDone marks a tracked unit as finished.
+func (p *Progress) UnitDone(dir string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.track == nil {
+		return
+	}
+	if dir == "" && len(p.track) == 1 {
+		// A single-unit run is its own working directory, which terragrunt
+		// does not bother to name.
+		for u := range p.track {
+			dir = u
+		}
+	}
+	if p.track[dir] {
+		p.done[dir] = true
+	}
 }
 
 func NewProgress(w io.Writer, tty, verbose bool) *Progress {
@@ -122,7 +164,10 @@ func (p *Progress) Watch(planDir string) chan struct{} {
 				return
 			case <-t.C:
 				poll++
-				if !p.tty || poll%4 == 0 {
+				if p.tracking() {
+					// Progress comes from the run's own events, not from files
+					// appearing on disk.
+				} else if !p.tty || poll%4 == 0 {
 					n := countPlans(planDir)
 					p.mu.Lock()
 					p.planned = n
@@ -147,6 +192,15 @@ func (p *Progress) Done() {
 	p.finished = true
 	p.mu.Unlock()
 	p.clear()
+}
+
+// pastVerb describes finished work: "applying" counts things applied. Caller
+// holds the lock.
+func (p *Progress) pastVerb() string {
+	if p.verb() == "applying" {
+		return "applied"
+	}
+	return "planned"
 }
 
 // verb is what to call what is happening. Caller holds the lock.
@@ -179,6 +233,9 @@ func (p *Progress) beat() {
 // A stack is measured in units ("7/28 planned"); a single unit has no such
 // scale, so it is measured in the resources terraform reports as it goes.
 func (p *Progress) progressLabel() string {
+	if p.track != nil {
+		return fmt.Sprintf("%d/%d %s", len(p.done), p.total, p.pastVerb())
+	}
 	if p.total == 1 {
 		switch {
 		case p.resources > 0:
@@ -224,6 +281,12 @@ func (p *Progress) draw() {
 		line += fmt.Sprintf(" · %s", p.red(fmt.Sprintf("%d failed", p.errors)))
 	}
 	fmt.Fprintf(p.w, "\r\033[2K%s", line)
+}
+
+func (p *Progress) tracking() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.track != nil
 }
 
 func (p *Progress) clear() {

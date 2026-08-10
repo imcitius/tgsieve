@@ -146,6 +146,7 @@ func cmdApply(args []string) (int, error) {
 	applyProg := runner.NewProgress(os.Stderr, isTTY(os.Stderr), cf.verbose)
 	applyProg.Color = color
 	applyProg.Verb = "applying"
+	applyProg.Track(rep.ChangedUnits())
 
 	applyOpts := opts
 	applyOpts.Command = "apply"

@@ -170,6 +170,23 @@ type Report struct {
 
 func (r Report) HasChanges() bool { return r.Kept.Total() > 0 }
 
+// ChangedUnits lists the units with something to do, which is what an apply
+// actually works through — the rest of the queue is visited and left alone.
+func (r Report) ChangedUnits() []string {
+	seen := map[string]bool{}
+	for _, g := range r.Groups {
+		for _, u := range g.Units {
+			seen[u] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for u := range seen {
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Apply runs the sieve over a whole run.
 func Apply(run model.Run, cfg *config.Config) *Report {
 	return ApplyAt(run, cfg, time.Now())
