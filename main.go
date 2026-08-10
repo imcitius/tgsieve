@@ -137,6 +137,7 @@ type commonFlags struct {
 	noSieve    bool
 	noColor    bool
 	timings    bool
+	showDrift  bool
 	format     string
 	engine     string
 	initFirst  bool
@@ -154,6 +155,7 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.noSieve, "no-sieve", false, "disable noise rules (still collapses duplicates)")
 	fs.BoolVar(&c.noColor, "no-color", false, "disable color")
 	fs.BoolVar(&c.timings, "timings", false, "list the slowest units")
+	fs.BoolVar(&c.showDrift, "drift", false, "list drifted resources instead of counting them")
 	fs.StringVar(&c.format, "format", "tty", "output format: tty, md, json or github (Actions annotations)")
 	fs.StringVar(&c.engine, "engine", "terragrunt", "what to drive: terragrunt, or terraform for a plain root module")
 	fs.BoolVar(&c.initFirst, "init", false, "run init before planning (terraform engine only)")
@@ -169,6 +171,7 @@ func (c *commonFlags) renderOpts() render.Options {
 		ShowEmpty: c.showEmpty,
 		Explain:   c.explain,
 		Timings:   c.timings,
+		ShowDrift: c.showDrift,
 		MaxAttrs:  c.maxAttrs,
 		MaxUnits:  c.maxUnits,
 		MaxBytes:  c.maxBytes,
@@ -562,8 +565,12 @@ func cmdShow(args []string) (int, error) {
 	var cf commonFlags
 	cf.bind(fs)
 	detailed := fs.Bool("detailed-exitcode", false, "exit 2 when changes survive the sieve")
+	failOn := fs.String("fail-on", "", "exit 2 when a surviving change is this severe or worse: low|medium|high")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitToolError, err
+	}
+	if *failOn != "" && config.SeverityRank(*failOn) == 0 {
+		return exitToolError, fmt.Errorf("--fail-on: want low, medium or high, got %q", *failOn)
 	}
 	cfg, err := cf.loadConfig()
 	if err != nil {

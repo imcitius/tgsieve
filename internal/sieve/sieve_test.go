@@ -514,8 +514,10 @@ func TestDataSourceReadsAreNotChanges(t *testing.T) {
 	read.Mode = "data"
 	create := res("u", "aws_instance.web", "aws_instance", "web", model.ActionCreate, attr("ami", nil, "ami-1"))
 
-	rep := Apply(model.Run{Units: []model.Unit{{Path: "u", Resources: []model.Resource{read, create}}}},
-		config.Default())
+	cfg := config.Default()
+	no := false
+	cfg.Hide.Reads = &no // shown, so the counting can be checked
+	rep := Apply(model.Run{Units: []model.Unit{{Path: "u", Resources: []model.Resource{read, create}}}}, cfg)
 
 	if rep.Kept.Create != 1 {
 		t.Errorf("a read is not a creation: Create = %d, want 1", rep.Kept.Create)
@@ -528,18 +530,65 @@ func TestDataSourceReadsAreNotChanges(t *testing.T) {
 	}
 }
 
-func TestReadsCanBeHidden(t *testing.T) {
+func TestReadsAreHiddenByDefault(t *testing.T) {
+	// A data source creates nothing, so it does not belong in a report about
+	// what an apply will do.
 	read := res("u", "data.aws_ami.this", "aws_ami", "this", model.ActionRead, attr("id", nil, "ami-1"))
 	read.Mode = "data"
 	run := model.Run{Units: []model.Unit{{Path: "u", Resources: []model.Resource{read}}}}
 
-	if rep := Apply(run, config.Default()); rep.Reads() != 1 {
-		t.Fatal("reads are shown by default: they explain why other values are unknown")
+	rep := Apply(run, config.Default())
+	if len(rep.Groups) != 0 || rep.Reads() != 0 {
+		t.Errorf("reads should be out of the way by default: %+v", rep.Groups)
 	}
+	if len(rep.UnchangedUnits) != 1 {
+		t.Errorf("a unit whose only entry is a read has nothing to report: %+v", rep.UnchangedUnits)
+	}
+
 	cfg := config.Default()
-	yes := true
-	cfg.Hide.Reads = &yes
-	if rep := Apply(run, cfg); len(rep.Groups) != 0 {
-		t.Errorf("hide.reads should remove them: %+v", rep.Groups)
+	no := false
+	cfg.Hide.Reads = &no
+	if rep := Apply(run, cfg); rep.Reads() != 1 {
+		t.Errorf("hide.reads: false should bring them back: %+v", rep.Groups)
+	}
+}
+
+func TestDriftOnlyUnitsAreNotCountedAsChanged(t *testing.T) {
+	// Nothing will happen in a unit whose only finding is drift, so calling it
+	// "with changes" overstates the plan.
+	d := res("u", "aws_x.y", "aws_x", "y", model.ActionUpdate, attr("size", "s", "l"))
+	d.Drift = true
+	run := model.Run{Units: []model.Unit{
+		{Path: "drifted", Resources: []model.Resource{d}},
+		{Path: "quiet"},
+	}}
+
+	rep := Apply(run, config.Default())
+	if rep.UnitsChanged != 0 {
+		t.Errorf("UnitsChanged = %d, want 0", rep.UnitsChanged)
+	}
+	if rep.UnitsDrifted != 1 {
+		t.Errorf("UnitsDrifted = %d, want 1", rep.UnitsDrifted)
+	}
+	if rep.HasChanges() {
+		t.Error("drift is not a change this plan makes")
+	}
+}
+
+func TestDriftDoesNotTripFailOn(t *testing.T) {
+	// A plan reporting no changes must not fail a pipeline: severity ranks
+	// what an apply will do, and drift is not that.
+	d := res("u", "aws_x.y", "aws_x", "y", model.ActionUpdate, attr("size", "s", "l"))
+	d.Drift = true
+	rep := Apply(model.Run{Units: []model.Unit{{Path: "u", Resources: []model.Resource{d}}}}, config.Default())
+
+	if rep.AtLeast("low") {
+		t.Errorf("drift alone should not meet any threshold: %v", rep.SeverityCounts)
+	}
+	if rep.Severity != "" {
+		t.Errorf("Severity = %q, want empty", rep.Severity)
+	}
+	if rep.Kept.Drift != 1 {
+		t.Errorf("the drift itself is still reported: %+v", rep.Kept)
 	}
 }

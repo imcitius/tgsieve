@@ -87,6 +87,12 @@ module, with the same sieve, collapsing, formats and apply flow. Still open:
 
 ## Sieve improvements
 
+- **Failing on drift.** Drift is deliberately outside `--fail-on`, since a plan
+  that changes nothing should not fail a pipeline. A team that wants to be
+  paged about drift has no knob for it; `--fail-on-drift` would be the obvious
+  one, kept separate so the two questions stay separate.
+
+
 Done: arrays are compared by membership rather than position (a reordered set
 is one line, an element leaving the middle no longer shifts every index into a
 false change), a `normalize:` block for empty-versus-null and reorderings,

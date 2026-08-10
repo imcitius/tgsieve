@@ -93,11 +93,15 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 	// Destructive changes are never folded: the reader must not have to click
 	// to find out something is being destroyed.
 	mdSection(b, opts, "Destroy / replace", danger, false, true)
-	mdSection(b, opts, "Drift this plan leaves", driftLeft, false, true)
+	if opts.ShowDrift {
+		mdSection(b, opts, "Drift this plan leaves", driftLeft, false, true)
+	}
 	mdSection(b, opts, "Update", updates, true, true)
 	mdSection(b, opts, "Create", creates, true, false)
 	mdSection(b, opts, "Read (data sources, resolved during apply)", reads, true, false)
-	mdSection(b, opts, "Drift this plan puts back", drift, true, true)
+	if opts.ShowDrift {
+		mdSection(b, opts, "Drift this plan puts back", drift, true, true)
+	}
 
 	b.line("")
 	b.line(mdFooter(rep))
@@ -135,18 +139,23 @@ func counts(rep *sieve.Report) string {
 	if k.Create > 0 {
 		parts = append(parts, fmt.Sprintf("+%d create", k.Create))
 	}
-	if k.Drift > 0 {
-		label := fmt.Sprintf("!%d drift", k.Drift)
-		if k.DriftLeft > 0 {
-			label += fmt.Sprintf(" (%d not addressed)", k.DriftLeft)
-		}
-		parts = append(parts, label)
-	}
 	if len(parts) == 0 {
 		parts = append(parts, "no changes")
 	}
 	tail := fmt.Sprintf("%s · %d with changes · %d unchanged · %d failed",
 		plural(rep.UnitsTotal, "unit"), rep.UnitsChanged, len(rep.UnchangedUnits), len(rep.ErroredUnits))
+	if rep.UnitsDrifted > 0 {
+		tail = fmt.Sprintf("%s · %d with changes · %d drifted only · %d unchanged · %d failed",
+			plural(rep.UnitsTotal, "unit"), rep.UnitsChanged, rep.UnitsDrifted,
+			len(rep.UnchangedUnits), len(rep.ErroredUnits))
+	}
+	if k.Drift > 0 {
+		note := fmt.Sprintf("%s drifted outside terraform", plural(k.Drift, "resource"))
+		if k.DriftLeft > 0 {
+			note += fmt.Sprintf(", %d not addressed by this plan", k.DriftLeft)
+		}
+		tail += "\n\n" + note + "."
+	}
 	if rep.Wall > 0 {
 		tail += " · " + rep.Wall.Round(100000000).String()
 	}

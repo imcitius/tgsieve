@@ -37,8 +37,9 @@ type Hide struct {
 	Drift *bool `yaml:"drift"`
 	// Outputs hides output-only changes.
 	Outputs *bool `yaml:"outputs"`
-	// Reads hides data sources that will be read during apply. They are not
-	// changes, but they do explain why other values are unknown.
+	// Reads hides data sources that will be read during apply. They create
+	// nothing, so they are hidden by default; set false to see them when
+	// working out why a value is unknown.
 	Reads *bool `yaml:"reads"`
 }
 
@@ -120,7 +121,6 @@ var DefaultSeverity = map[string]string{
 	"delete":  "high",
 	"replace": "high",
 	"update":  "medium",
-	"drift":   "medium",
 	"create":  "low",
 }
 
@@ -152,7 +152,7 @@ func Default() *Config {
 	t, f := true, false
 	return &Config{
 		Version:   1,
-		Hide:      Hide{UnchangedUnits: &t, Drift: &f, Outputs: &f, Reads: &f},
+		Hide:      Hide{UnchangedUnits: &t, Drift: &f, Outputs: &f, Reads: &t},
 		NeverHide: NeverHide{Actions: &[]string{"delete", "replace"}},
 		Collapse:  Collapse{Instances: &t, CrossUnit: &t, CrossUnitMode: "shape", MinUnits: 2},
 		// Nothing is normalized away by default; both of these are opinions

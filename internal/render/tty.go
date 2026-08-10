@@ -17,6 +17,7 @@ import (
 type Options struct {
 	Color      bool
 	Timings    bool // list the slowest units
+	ShowDrift  bool // list drifted resources instead of counting them
 	Verbose    bool // show attributes for creates/deletes too
 	ShowEmpty  bool // list the unchanged units
 	Explain    bool // list every hidden attribute and the rule that hid it
@@ -171,8 +172,13 @@ func TTY(w io.Writer, rep *sieve.Report, opts Options) {
 	section(w, p, opts, "UPDATE", updates, true)
 	section(w, p, opts, "CREATE", creates, opts.Verbose)
 	section(w, p, opts, "READ (data sources, resolved during apply)", reads, opts.Verbose)
-	section(w, p, opts, "DRIFT — this plan puts it back", drift, true)
-	section(w, p, opts, "DRIFT — this plan leaves it", driftLeft, true)
+	// Drift is a finding, not work: nothing in it changes when you apply. It
+	// is counted in the summary and listed only when asked for, so a plan that
+	// will do nothing does not open with thirty lines of it.
+	if opts.ShowDrift {
+		section(w, p, opts, "DRIFT — this plan puts it back", drift, true)
+		section(w, p, opts, "DRIFT — this plan leaves it", driftLeft, true)
+	}
 
 	if len(rep.Outputs) > 0 {
 		n := 0
@@ -505,20 +511,41 @@ func footer(w io.Writer, p painter, rep *sieve.Report, opts Options) {
 	if k.Create > 0 {
 		parts = append(parts, p.green(fmt.Sprintf("+%d create", k.Create)))
 	}
-	if k.Drift > 0 {
-		label := fmt.Sprintf("!%d drift", k.Drift)
-		if k.DriftLeft > 0 {
-			label += fmt.Sprintf(" (%d not addressed)", k.DriftLeft)
-		}
-		parts = append(parts, p.cyan(label))
-	}
 	if len(parts) == 0 {
 		parts = append(parts, p.green("no changes"))
 	}
 
 	fmt.Fprintf(w, "\n%s  %s\n", p.bold("SUMMARY"), strings.Join(parts, "  "))
+
+	// Drift is reported after the verdict rather than inside it: it is not
+	// something this plan will do.
+	if k.Drift > 0 {
+		note := fmt.Sprintf("%s drifted outside terraform", plural(k.Drift, "resource"))
+		switch {
+		case k.DriftLeft == k.Drift && k.Drift == 1:
+			note += ", not addressed by this plan"
+		case k.DriftLeft == k.Drift:
+			note += ", none of them addressed by this plan"
+		case k.DriftLeft > 0:
+			note += fmt.Sprintf(", %d of them not addressed by this plan", k.DriftLeft)
+		case k.Drift == 1:
+			note += ", put back by this plan"
+		default:
+			note += ", all of them put back by this plan"
+		}
+		if !opts.ShowDrift {
+			note += " (--drift to list)"
+		}
+		fmt.Fprintf(w, "  %s\n", p.cyan(note))
+	}
+
 	line := fmt.Sprintf("%s · %d with changes · %d unchanged · %d failed",
 		plural(rep.UnitsTotal, "unit"), rep.UnitsChanged, len(rep.UnchangedUnits), len(rep.ErroredUnits))
+	if rep.UnitsDrifted > 0 {
+		line = fmt.Sprintf("%s · %d with changes · %d drifted only · %d unchanged · %d failed",
+			plural(rep.UnitsTotal, "unit"), rep.UnitsChanged, rep.UnitsDrifted,
+			len(rep.UnchangedUnits), len(rep.ErroredUnits))
+	}
 	if n := len(rep.SkippedUnits); n > 0 {
 		line += fmt.Sprintf(" · %d not run", n)
 	}

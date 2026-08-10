@@ -147,6 +147,9 @@ type Report struct {
 
 	UnitsTotal   int
 	UnitsChanged int
+	// UnitsDrifted counts units whose only finding is drift: nothing will
+	// change there, so calling them changed overstates the plan.
+	UnitsDrifted int
 
 	Raw  model.Counts // before sieving
 	Kept model.Counts // after sieving
@@ -245,6 +248,7 @@ func ApplyAt(run model.Run, cfg *config.Config, now time.Time) *Report {
 			continue
 		}
 		unitKept := 0
+		unitActionable := 0
 		for _, res := range u.Resources {
 			if res.Drift && hideDrift {
 				continue
@@ -267,14 +271,22 @@ func ApplyAt(run model.Run, cfg *config.Config, now time.Time) *Report {
 				rep.Kept.DriftLeft++
 			}
 			unitKept++
+			if !r.Drift && r.Action != model.ActionRead {
+				unitActionable++
+			}
 		}
 		if !hideOutputs && len(u.Outputs) > 0 {
 			rep.Outputs[u.Path] = u.Outputs
 		}
-		if unitKept == 0 && len(rep.Outputs[u.Path]) == 0 {
-			rep.UnchangedUnits = append(rep.UnchangedUnits, u.Path)
-		} else {
+		switch {
+		case unitActionable > 0 || len(rep.Outputs[u.Path]) > 0:
 			rep.UnitsChanged++
+		case unitKept > 0:
+			// Drift, or a data source read: findings, but nothing this plan
+			// will do anything about.
+			rep.UnitsDrifted++
+		default:
+			rep.UnchangedUnits = append(rep.UnchangedUnits, u.Path)
 		}
 		if u.Duration > 0 {
 			t := UnitTiming{Path: u.Path, Duration: u.Duration, Changes: unitKept, Reused: u.Reused}
@@ -320,7 +332,8 @@ func (r *Report) rankSeverity(cfg *config.Config) {
 	add("replace", r.Kept.Replace)
 	add("update", r.Kept.Update)
 	add("create", r.Kept.Create)
-	add("drift", r.Kept.Drift)
+	// Drift is deliberately absent: severity ranks what an apply will do, and
+	// --fail-on must not turn red for a plan that reports no changes.
 }
 
 // AtLeast reports whether anything survived at or above a severity level.

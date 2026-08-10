@@ -439,7 +439,7 @@ hide:
   unchanged_units: true   # units with nothing left to say become a count
   drift: false            # refresh-detected drift gets its own section
   outputs: false
-  reads: false            # data sources resolved during apply
+  reads: true             # data sources resolved during apply: they create nothing
 
 ignore:
   - name: tag churn
@@ -523,7 +523,17 @@ its name, so `--explain` says where a suppression came from.
 
 ## Drift
 
-Refresh-detected drift is split by what the plan intends to do about it:
+Drift is a finding, not work: nothing in it changes when you apply. So it is
+counted rather than listed, and a plan whose only findings are drift reports
+what terraform reports — no changes:
+
+```
+SUMMARY  no changes
+  3 resources drifted outside terraform, none of them addressed by this plan (--drift to list)
+  1 unit · 0 with changes · 1 drifted only · 0 unchanged · 0 failed
+```
+
+`--drift` lists them, split by what the plan intends to do about each:
 
 ```
 DRIFT — this plan puts it back (2)
@@ -532,7 +542,9 @@ DRIFT — this plan leaves it (1)
 
 The second is the one that bites: an attribute under `ignore_changes`, or a
 resource the configuration no longer governs, stays drifted after the apply.
-The summary carries the same distinction — `!3 drift (1 not addressed)`.
+
+Drift never trips `--fail-on` or `--detailed-exitcode`, since those describe
+what an apply will do.
 
 Drift is terraform's own finding, not tgsieve's: the refresh read the real
 infrastructure and it no longer matched state. Computed attributes are the
