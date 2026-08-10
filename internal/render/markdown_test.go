@@ -99,8 +99,8 @@ func TestMarkdownReportsFailuresFirst(t *testing.T) {
 		}},
 	}
 	got := renderMD(t, rep, Options{})
-	if !strings.HasPrefix(got, "## tgsieve — failed") {
-		t.Errorf("the headline should not bury a failure:\n%s", got)
+	if !strings.HasPrefix(got, Marker+"\n## tgsieve — failed") {
+		t.Errorf("the marker should lead, then the headline:\n%s", got)
 	}
 	if !strings.Contains(got, "### Failed (1)") {
 		t.Errorf("missing failure section:\n%s", got)

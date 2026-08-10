@@ -46,18 +46,24 @@ and store it under `.tgsieve/baseline.json`. Then:
 - exit code 2 only when the plan differs from the baseline, which turns a
   noisy CI check into a meaningful one.
 
-### Output formats
+### Output formats — done
 
-`--format md` is in: destructive changes open, the rest folded, size-capped for
-a GitHub comment, and wired into plan, apply and show.
+`--format` covers `tty`, `md`, `json` and `github`. Markdown folds everything
+but destruction, carries a `<!-- tgsieve -->` marker so a bot can update its
+own comment, and reports the apply outcome too. JSON is a versioned document
+with its own types, and omits values terraform marked sensitive. GitHub emits
+workflow commands, one annotation per location a failure came from.
 
-- `--format json` — stable machine schema (the `sieve.Report` is already
-  close); lets people build their own views without reparsing terraform.
-- **Markdown for the apply outcome.** `apply --format md` renders the plan as
-  markdown but the APPLIED/FAILED block underneath is still terminal text.
-- **Comment identity.** Atlantis replaces its own comments; a tool posting its
-  own would want a stable marker line to update rather than pile up.
-- `--format sarif`-ish / annotations for CI systems that want inline warnings.
+Still open:
+
+- **SARIF.** Considered and skipped: SARIF describes static analysis findings
+  in source, and a plan is a statement about infrastructure. Failures would map
+  (they have file and line); planned changes would not, and half a format is
+  worse than none.
+- **`$GITHUB_STEP_SUMMARY`.** `--format md >> "$GITHUB_STEP_SUMMARY"` already
+  works; writing it directly would save a shell redirect and nothing else.
+- **Schema documentation.** The JSON shape is described by example in the
+  README and pinned by tests, but there is no published schema file.
 
 ### Interactive TUI (`--tui`)
 Bubbletea: unit list → resource list → attribute diff, `/` to filter, `h` to

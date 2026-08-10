@@ -315,6 +315,10 @@ than being quietly ignored:
 
 ## CI and pull requests
 
+`--format` decides the shape: `tty` (default), `md`, `json` or `github`.
+
+### Markdown
+
 `--format md` renders the same report as markdown for a pull request comment:
 destructive changes stay open, everything else folds into `<details>`, and the
 output is capped (`--max-bytes`, default 55000) so it is trimmed deliberately
@@ -361,7 +365,60 @@ workflows:
 
 `--fail-on high` turns the plan step red only when something is destroyed or
 replaced. `apply` needs `--auto-approve` in CI, since without a terminal to ask
-it refuses rather than assuming.
+it refuses rather than assuming. With `--format md`, `apply` reports its
+outcome in markdown too, so plan and result read as one comment.
+
+Every markdown report starts with `<!-- tgsieve -->`, so a bot can find its own
+previous comment and update it rather than adding another one each run.
+
+### JSON
+
+`--format json` writes one versioned document, with its own types rather than
+the internals of the sieve — a rename inside tgsieve is not supposed to break
+whatever reads this:
+
+```bash
+tgsieve plan --all --format json | jq -r '.summary.changes.total'
+tgsieve plan --all --format json | jq -r '.changes[] | select(.action=="replace") | .address'
+```
+
+```json
+{
+  "schema_version": 1,
+  "tool": { "name": "tgsieve", "version": "0.6.2", "engine": "terragrunt" },
+  "command": "plan",
+  "summary": {
+    "units":   { "total": 5, "changed": 5, "unchanged": 0, "failed": 0, "not_run": 0 },
+    "changes": { "create": 0, "update": 4, "delete": 4, "replace": 4, "total": 12 },
+    "severity": { "level": "high", "counts": { "high": 8, "medium": 4 } }
+  },
+  "changes": [ … ],
+  "failures": [ { "headline": "…", "count": 38, "locations": ["modules-vpcs.tf:72"] } ]
+}
+```
+
+**Sensitive values never appear.** An attribute terraform marked sensitive is
+reported with `"sensitive": true` and no `before` or `after` — a
+machine-readable report is the easiest place for a secret to end up somewhere
+it should not be.
+
+`apply --format json` emits a single document at the end carrying both the plan
+and an `applied` section, rather than two documents on one stream.
+
+### GitHub Actions
+
+`--format github` emits workflow commands, so failures land on the diff rather
+than only in the job log:
+
+```
+::error file=modules-vpcs.tf,line=72,title=infra/networking::Error: Unsupported attribute: This object does not have an attribute named "cyclops-preprod".
+::warning title=tgsieve::8 resources will be destroyed or replaced (4 destroy, 4 replace)
+::notice title=tgsieve::0 create, 4 update, 4 destroy, 4 replace across 5 units
+```
+
+Each location a failure was reported from gets its own annotation, and the
+message drops the `at file:line` it carries, since the annotation already says
+where it is.
 
 ## Noise rules
 

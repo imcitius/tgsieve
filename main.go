@@ -154,7 +154,7 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.noSieve, "no-sieve", false, "disable noise rules (still collapses duplicates)")
 	fs.BoolVar(&c.noColor, "no-color", false, "disable color")
 	fs.BoolVar(&c.timings, "timings", false, "list the slowest units")
-	fs.StringVar(&c.format, "format", "tty", "output format: tty or md (markdown for a PR comment)")
+	fs.StringVar(&c.format, "format", "tty", "output format: tty, md, json or github (Actions annotations)")
 	fs.StringVar(&c.engine, "engine", "terragrunt", "what to drive: terragrunt, or terraform for a plain root module")
 	fs.BoolVar(&c.initFirst, "init", false, "run init before planning (terraform engine only)")
 	fs.IntVar(&c.maxBytes, "max-bytes", render.DefaultMaxBytes, "size limit for markdown output")
@@ -176,15 +176,33 @@ func (c *commonFlags) renderOpts() render.Options {
 }
 
 // render writes the report in whichever shape the caller asked for.
-func (c *commonFlags) render(w io.Writer, rep *sieve.Report) {
-	if c.markdown() {
+func (c *commonFlags) render(w io.Writer, rep *sieve.Report, meta render.Meta) {
+	switch {
+	case c.markdown():
 		render.Markdown(w, rep, c.renderOpts())
-		return
+	case c.jsonFormat():
+		if err := render.JSON(w, rep, meta, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "tgsieve: writing json: %v\n", err)
+		}
+	case c.githubFormat():
+		render.GitHub(w, rep, c.renderOpts())
+	default:
+		render.TTY(w, rep, c.renderOpts())
 	}
-	render.TTY(w, rep, c.renderOpts())
 }
 
-func (c *commonFlags) markdown() bool { return c.format == "md" || c.format == "markdown" }
+func (c *commonFlags) markdown() bool     { return c.format == "md" || c.format == "markdown" }
+func (c *commonFlags) jsonFormat() bool   { return c.format == "json" }
+func (c *commonFlags) githubFormat() bool { return c.format == "github" }
+
+// meta describes this invocation for the machine-readable formats.
+func (c *commonFlags) meta(command string) render.Meta {
+	engine := "terragrunt"
+	if c.direct() {
+		engine = runner.EngineTerraform
+	}
+	return render.Meta{Version: version, Command: command, Engine: engine}
+}
 
 // direct reports whether terragrunt is out of the picture.
 func (c *commonFlags) direct() bool {
@@ -225,10 +243,10 @@ func (c *commonFlags) checkStackFlags(all bool, filters []string, filterAffected
 
 func (c *commonFlags) checkFormat() error {
 	switch c.format {
-	case "", "tty", "md", "markdown":
+	case "", "tty", "md", "markdown", "json", "github":
 		return nil
 	}
-	return fmt.Errorf("--format: want tty or md, got %q", c.format)
+	return fmt.Errorf("--format: want tty, md, json or github, got %q", c.format)
 }
 
 func (c *commonFlags) loadConfig() (*config.Config, error) {
@@ -407,7 +425,7 @@ func cmdPlan(args []string) (int, error) {
 	rep.NoRefresh = refreshDisabled(tfArgs)
 	rep.TFPath = res.TFPath
 	rep.Direct = cf.direct()
-	cf.render(os.Stdout, rep)
+	cf.render(os.Stdout, rep, cf.meta("plan"))
 	if reused > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of the plans above were reused from a previous run\n", reused)
 	}
@@ -528,7 +546,7 @@ func renderSaved(dir string, cfg *config.Config, cf commonFlags, detailed bool) 
 	}
 	runner.ApplyTimings(dir, &run)
 	rep := sieve.Apply(run, cfg)
-	cf.render(os.Stdout, rep)
+	cf.render(os.Stdout, rep, cf.meta("show"))
 	if detailed && rep.HasChanges() {
 		return exitChanges, nil
 	}
@@ -560,7 +578,7 @@ func cmdShow(args []string) (int, error) {
 		return exitToolError, fmt.Errorf("no tfplan.json found under %s", dir)
 	}
 	rep := sieve.Apply(run, cfg)
-	cf.render(os.Stdout, rep)
+	cf.render(os.Stdout, rep, cf.meta("show"))
 	if len(rep.ErroredUnits) > 0 {
 		return exitUnitsFail, nil
 	}

@@ -9,6 +9,10 @@ import (
 	"github.com/imcitius/tgsieve/internal/sieve"
 )
 
+// Marker identifies a tgsieve comment. Tools that update a previous comment
+// rather than adding another one need something to search for.
+const Marker = "<!-- tgsieve -->"
+
 // DefaultMaxBytes keeps a comment under GitHub's 65536-character limit with
 // room for whatever the CI tool wraps around it. A report that is silently
 // rejected for being too long is worse than one that says it was trimmed.
@@ -24,6 +28,9 @@ func Markdown(w io.Writer, rep *sieve.Report, opts Options) {
 	}
 	b := &budget{limit: limit}
 
+	// A stable marker so a bot can find and update its own comment instead of
+	// posting a new one on every run.
+	b.line(Marker)
 	b.line(headline(rep))
 	b.line("")
 	b.line(counts(rep))

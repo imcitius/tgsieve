@@ -132,13 +132,25 @@ func cmdApply(args []string) (int, error) {
 	}
 	runner.ApplyTimings(planDir, &run)
 	rep := sieve.Apply(run, cfg)
-	cf.render(os.Stdout, rep)
+	rep.Direct = cf.direct()
+	// A machine-readable apply emits one document at the end describing both
+	// what was planned and what happened; printing the plan first would leave
+	// consumers with two documents on one stream.
+	if !cf.jsonFormat() {
+		cf.render(os.Stdout, rep, cf.meta("apply"))
+	}
 
 	if len(rep.ErroredUnits) > 0 {
+		if cf.jsonFormat() {
+			cf.render(os.Stdout, rep, cf.meta("apply"))
+		}
 		fmt.Fprintln(os.Stderr, "not applying: some units failed to plan")
 		return exitUnitsFail, nil
 	}
 	if !rep.HasChanges() {
+		if cf.jsonFormat() {
+			cf.render(os.Stdout, rep, cf.meta("apply"))
+		}
 		if rep.Kept.Drift > 0 {
 			// Drift is state catching up with reality, not work an apply does.
 			fmt.Fprintf(os.Stderr,
@@ -156,6 +168,9 @@ func cmdApply(args []string) (int, error) {
 		return exitToolError, err
 	}
 	if !ok {
+		if cf.jsonFormat() {
+			cf.render(os.Stdout, rep, cf.meta("apply"))
+		}
 		fmt.Fprintln(os.Stderr, "aborted — nothing was applied")
 		return exitAborted, nil
 	}
@@ -179,7 +194,19 @@ func cmdApply(args []string) (int, error) {
 	outcome.Wall = res.Duration
 	outcome.TFPath = res.TFPath
 	outcome.Direct = cf.direct()
-	renderOutcome(os.Stdout, rep, outcome, res, cf.renderOpts())
+
+	switch {
+	case cf.jsonFormat():
+		applied := render.AppliedResult(!applyFailed(outcome, res),
+			res.Duration.Milliseconds(), rep.ChangedUnits(), res.Errors)
+		if err := render.JSON(os.Stdout, rep, cf.meta("apply"), applied); err != nil {
+			fmt.Fprintf(os.Stderr, "tgsieve: writing json: %v\n", err)
+		}
+	case cf.markdown():
+		renderOutcomeMarkdown(os.Stdout, rep, outcome, res)
+	default:
+		renderOutcome(os.Stdout, rep, outcome, res, cf.renderOpts())
+	}
 
 	if res.Interrupted {
 		fmt.Fprintln(os.Stderr, "interrupted — some units may have applied")
@@ -293,6 +320,35 @@ func renderOutcome(w io.Writer, planned, outcome *sieve.Report, res *runner.Resu
 			plural(planned.UnitsChanged, "unit"))), took)
 	if c := planned.Kept; c.Delete+c.Replace > 0 {
 		fmt.Fprintf(w, "  %s\n", p("2", fmt.Sprintf("%d destroyed, %d replaced", c.Delete, c.Replace)))
+	}
+}
+
+// renderOutcomeMarkdown reports the apply in the same document shape as the
+// plan above it, so a comment reads as one story.
+func renderOutcomeMarkdown(w io.Writer, planned, outcome *sieve.Report, res *runner.Result) {
+	took := res.Duration.Round(100 * time.Millisecond)
+	if applyFailed(outcome, res) {
+		headline := "### Apply failed"
+		if res.Interrupted {
+			headline = "### Apply interrupted"
+		}
+		fmt.Fprintf(w, "\n%s\n\n", headline)
+		fmt.Fprintf(w, "Stopped after %s — the report above is what was planned, not what landed.\n", took)
+		switch {
+		case len(outcome.Failures) > 0:
+			for _, g := range outcome.Failures {
+				fmt.Fprintf(w, "\n**%s**\n\n```\n%s\n```\n", strings.Join(g.Units, ", "), strings.Join(g.Detail, "\n"))
+			}
+		case len(res.Errors) > 0:
+			fmt.Fprintf(w, "\n```\n%s\n```\n", strings.Join(res.Errors, "\n"))
+		}
+		fmt.Fprint(w, "\nRun `tgsieve plan` to see where things actually stand.\n")
+		return
+	}
+	fmt.Fprintf(w, "\n### Applied\n\n%s across %s in %s.\n",
+		plural(planned.Kept.Total(), "change"), plural(planned.UnitsChanged, "unit"), took)
+	if c := planned.Kept; c.Delete+c.Replace > 0 {
+		fmt.Fprintf(w, "\n%d destroyed, %d replaced.\n", c.Delete, c.Replace)
 	}
 }
 
