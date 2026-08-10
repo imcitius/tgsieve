@@ -24,6 +24,9 @@ type Options struct {
 	MaxUnits   int
 	MaxValue   int
 	MaxTimings int
+	// MaxBytes caps markdown output so a CI comment is trimmed on purpose
+	// rather than rejected for being too long.
+	MaxBytes int
 }
 
 func (o Options) withDefaults() Options {

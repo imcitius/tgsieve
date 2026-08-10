@@ -47,10 +47,16 @@ and store it under `.tgsieve/baseline.json`. Then:
   noisy CI check into a meaningful one.
 
 ### Output formats
+
+`--format md` is in: destructive changes open, the rest folded, size-capped for
+a GitHub comment, and wired into plan, apply and show.
+
 - `--format json` — stable machine schema (the `sieve.Report` is already
   close); lets people build their own views without reparsing terraform.
-- `--format md` — a PR comment: summary table, danger section, collapsed
-  `<details>` for the rest.
+- **Markdown for the apply outcome.** `apply --format md` renders the plan as
+  markdown but the APPLIED/FAILED block underneath is still terminal text.
+- **Comment identity.** Atlantis replaces its own comments; a tool posting its
+  own would want a stable marker line to update rather than pile up.
 - `--format sarif`-ish / annotations for CI systems that want inline warnings.
 
 ### Interactive TUI (`--tui`)

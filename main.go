@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -135,6 +136,8 @@ type commonFlags struct {
 	noSieve    bool
 	noColor    bool
 	timings    bool
+	format     string
+	maxBytes   int
 	maxAttrs   int
 	maxUnits   int
 }
@@ -148,6 +151,8 @@ func (c *commonFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.noSieve, "no-sieve", false, "disable noise rules (still collapses duplicates)")
 	fs.BoolVar(&c.noColor, "no-color", false, "disable color")
 	fs.BoolVar(&c.timings, "timings", false, "list the slowest units")
+	fs.StringVar(&c.format, "format", "tty", "output format: tty or md (markdown for a PR comment)")
+	fs.IntVar(&c.maxBytes, "max-bytes", render.DefaultMaxBytes, "size limit for markdown output")
 	fs.IntVar(&c.maxAttrs, "max-attrs", 12, "max attributes shown per resource")
 	fs.IntVar(&c.maxUnits, "max-units", 6, "max unit names listed per collapsed group")
 }
@@ -161,7 +166,27 @@ func (c *commonFlags) renderOpts() render.Options {
 		Timings:   c.timings,
 		MaxAttrs:  c.maxAttrs,
 		MaxUnits:  c.maxUnits,
+		MaxBytes:  c.maxBytes,
 	}
+}
+
+// render writes the report in whichever shape the caller asked for.
+func (c *commonFlags) render(w io.Writer, rep *sieve.Report) {
+	if c.markdown() {
+		render.Markdown(w, rep, c.renderOpts())
+		return
+	}
+	render.TTY(w, rep, c.renderOpts())
+}
+
+func (c *commonFlags) markdown() bool { return c.format == "md" || c.format == "markdown" }
+
+func (c *commonFlags) checkFormat() error {
+	switch c.format {
+	case "", "tty", "md", "markdown":
+		return nil
+	}
+	return fmt.Errorf("--format: want tty or md, got %q", c.format)
 }
 
 func (c *commonFlags) loadConfig() (*config.Config, error) {
@@ -207,6 +232,9 @@ func cmdPlan(args []string) (int, error) {
 		return exitToolError, err
 	}
 
+	if err := cf.checkFormat(); err != nil {
+		return exitToolError, err
+	}
 	cfg, err := cf.loadConfig()
 	if err != nil {
 		return exitToolError, err
@@ -325,7 +353,7 @@ func cmdPlan(args []string) (int, error) {
 	rep.Wall = res.Duration
 	rep.NoRefresh = refreshDisabled(tfArgs)
 	rep.TFPath = res.TFPath
-	render.TTY(os.Stdout, rep, cf.renderOpts())
+	cf.render(os.Stdout, rep)
 	if reused > 0 {
 		fmt.Fprintf(os.Stderr, "  %d of the plans above were reused from a previous run\n", reused)
 	}
@@ -446,7 +474,7 @@ func renderSaved(dir string, cfg *config.Config, cf commonFlags, detailed bool) 
 	}
 	runner.ApplyTimings(dir, &run)
 	rep := sieve.Apply(run, cfg)
-	render.TTY(os.Stdout, rep, cf.renderOpts())
+	cf.render(os.Stdout, rep)
 	if detailed && rep.HasChanges() {
 		return exitChanges, nil
 	}
@@ -478,7 +506,7 @@ func cmdShow(args []string) (int, error) {
 		return exitToolError, fmt.Errorf("no tfplan.json found under %s", dir)
 	}
 	rep := sieve.Apply(run, cfg)
-	render.TTY(os.Stdout, rep, cf.renderOpts())
+	cf.render(os.Stdout, rep)
 	if len(rep.ErroredUnits) > 0 {
 		return exitUnitsFail, nil
 	}

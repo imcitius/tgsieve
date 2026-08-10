@@ -54,6 +54,9 @@ func cmdApply(args []string) (int, error) {
 		return exitToolError, fmt.Errorf("--parallelism paces a stack run: add --all")
 	}
 
+	if err := cf.checkFormat(); err != nil {
+		return exitToolError, err
+	}
 	cfg, err := cf.loadConfig()
 	if err != nil {
 		return exitToolError, err
@@ -121,7 +124,7 @@ func cmdApply(args []string) (int, error) {
 	}
 	runner.ApplyTimings(planDir, &run)
 	rep := sieve.Apply(run, cfg)
-	render.TTY(os.Stdout, rep, cf.renderOpts())
+	cf.render(os.Stdout, rep)
 
 	if len(rep.ErroredUnits) > 0 {
 		fmt.Fprintln(os.Stderr, "not applying: some units failed to plan")

@@ -261,6 +261,56 @@ each differently:
 | `3` | one or more units failed to plan |
 | `130` | interrupted with Ctrl-C |
 
+## CI and pull requests
+
+`--format md` renders the same report as markdown for a pull request comment:
+destructive changes stay open, everything else folds into `<details>`, and the
+output is capped (`--max-bytes`, default 55000) so it is trimmed deliberately
+rather than rejected by GitHub's comment limit.
+
+```bash
+tgsieve plan --all --format md
+```
+
+```markdown
+## tgsieve
+
+**±4 replace** · **-8 destroy** · ~4 update
+
+5 units · 5 with changes · 0 unchanged · 0 failed · 1s
+
+> **12 resources will be destroyed or replaced.**
+
+### Destroy / replace (12)
+
+**4 units** — envs/dev/a, envs/prod/a, envs/prod/b, envs/prod/c
+- `±` `null_resource.pin` ×4
+  - `triggers.region` `"eu-central-1"` → `"us-west-2"` — **forces replacement**
+
+<details><summary><b>Update (4)</b></summary>
+…
+</details>
+```
+
+With Atlantis, run it from a custom workflow — the command's output becomes the
+comment, and the exit codes described above decide whether the step passed:
+
+```yaml
+workflows:
+  tgsieve:
+    plan:
+      steps:
+        - init
+        - run: tgsieve plan --all --format md --fail-on high
+    apply:
+      steps:
+        - run: tgsieve apply --all --auto-approve --format md
+```
+
+`--fail-on high` turns the plan step red only when something is destroyed or
+replaced. `apply` needs `--auto-approve` in CI, since without a terminal to ask
+it refuses rather than assuming.
+
 ## Noise rules
 
 `tgsieve init` writes a starter file at the project root — the git root, or
