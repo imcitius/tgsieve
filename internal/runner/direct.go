@@ -38,18 +38,54 @@ func directBinary(opts Options) string {
 	return "terraform"
 }
 
-// runDirect plans or applies one root module with terraform itself.
+// runDirect plans or applies with terraform itself, over the root modules in
+// play: the working directory, or every directory --unit named.
 func runDirect(ctx context.Context, opts Options, planDir string, res *Result) error {
+	dirs := opts.Dirs
+	if len(dirs) == 0 {
+		dirs = []string{opts.Dir}
+	}
+	worst := 0
+	for _, dir := range dirs {
+		one := opts
+		one.Dir = dir
+		one.Dirs = nil
+		if len(dirs) > 1 {
+			// With one module the report has nowhere else to put a resource;
+			// with several, saying which one it belongs to is the point.
+			one.unit = unitName(dir)
+		}
+		if err := runDirectOne(ctx, one, planDir, res); err != nil {
+			return err
+		}
+		if res.ExitCode > worst {
+			worst = res.ExitCode
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	// One module that failed fails the run, however many succeeded after it.
+	res.ExitCode = worst
+	return nil
+}
+
+func runDirectOne(ctx context.Context, opts Options, planDir string, res *Result) error {
 	bin := directBinary(opts)
 	res.TFPath = bin
 	unit := unitName(opts.Dir)
 	started := time.Now()
+	// terraform names no module in its diagnostics, so this one owns whatever
+	// it adds to the list while it runs.
+	before := len(res.Errors)
+	mine := func() []string { return append([]string(nil), res.Errors[before:]...) }
 
 	if opts.Init {
 		if err := directCmd(ctx, opts, bin, res, []string{"init", "-input=false"}); err != nil {
 			return err
 		}
 		if res.ExitCode != 0 {
+			res.directFailures = append(res.directFailures, failedUnit(unit, started, mine()))
 			return nil
 		}
 	}
@@ -73,10 +109,11 @@ func runDirect(ctx context.Context, opts Options, planDir string, res *Result) e
 		if u.Errored {
 			// Without this the report says only "failed", while the reason
 			// terraform gave scrolls past in the live feed and is lost.
-			u.Error = firstErrorFor(unit, res.Errors)
-			u.Errors = res.Errors
+			errs := mine()
+			u.Error = firstErrorFor(unit, errs)
+			u.Errors = errs
 		}
-		res.Run.Units = []model.Unit{u}
+		res.Run.Units = append(res.Run.Units, u)
 		return nil
 	}
 
@@ -86,6 +123,7 @@ func runDirect(ctx context.Context, opts Options, planDir string, res *Result) e
 		return err
 	}
 	if res.ExitCode != 0 {
+		res.directFailures = append(res.directFailures, failedUnit(unit, started, mine()))
 		return nil
 	}
 
@@ -103,8 +141,23 @@ func runDirect(ctx context.Context, opts Options, planDir string, res *Result) e
 	if err := os.WriteFile(filepath.Join(unitDir, planFileName), out, 0o644); err != nil {
 		return err
 	}
-	res.durations = map[string]time.Duration{unit: time.Since(started)}
+	if res.durations == nil {
+		res.durations = map[string]time.Duration{}
+	}
+	res.durations[unit] = time.Since(started)
 	return nil
+}
+
+// failedUnit records a root module that never produced a plan, with the
+// diagnostics it produced instead.
+func failedUnit(unit string, started time.Time, errs []string) model.Unit {
+	return model.Unit{
+		Path:     unit,
+		Duration: time.Since(started),
+		Errored:  true,
+		Error:    firstErrorFor(unit, errs),
+		Errors:   errs,
+	}
 }
 
 // directPlanPath decides where the binary plan lives, keeping the same layout

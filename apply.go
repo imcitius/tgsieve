@@ -39,7 +39,7 @@ func cmdApply(args []string) (int, error) {
 	var filters stringList
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
 	var units stringList
-	fs.Var(&units, "unit", "apply only this unit directory, repeatable (implies --all)")
+	fs.Var(&units, "unit", "apply only this unit or root module directory, repeatable (implies --all under terragrunt)")
 	fs.Var(&units, "u", "shorthand for --unit")
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
@@ -130,18 +130,12 @@ func cmdApply(args []string) (int, error) {
 
 	now := runner.CurrentProvenance(ctx, cf.dir, "apply", version)
 
-	if len(sels) > 0 && !reused {
-		// A --unit that names nothing selects nothing, and terragrunt would
-		// run the empty queue without complaint: better to say so than to
-		// report "no changes" for infrastructure nobody looked at.
-		discovered, err := runner.Discover(ctx, opts)
-		if err != nil {
-			return exitToolError, fmt.Errorf("listing the units named by --unit: %w", err)
-		}
-		if err := checkUnitsMatch(cf.dir, sels, discovered); err != nil {
+	// Saved plans need no queue measured for them, but the terraform engine
+	// still has to be pointed at every directory it will apply in.
+	if len(sels) > 0 && (cf.direct() || !reused) {
+		if err := planSelection(ctx, &opts, cf, sels); err != nil {
 			return exitToolError, err
 		}
-		opts.KnownUnits = discovered
 	}
 
 	// Phase one: get plans to look at.

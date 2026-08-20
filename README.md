@@ -205,6 +205,19 @@ empty, and the run reports "no changes" for infrastructure it never looked at.
 With `--plans`, `--unit` narrows the saved plans instead, so the report you
 approve is the set that will be applied.
 
+`--unit` works with `--engine terraform` too, and is how that engine runs more
+than one root module in a single report:
+
+```bash
+tgsieve plan --engine terraform -u infra/network -u infra/cluster
+```
+
+There is no terragrunt to expand a folder there, so each `--unit` names a root
+module — a directory with `.tf` files in it — and a pattern selects the root
+modules under it. A directory holding none is refused rather than planned as
+nothing. The modules run one after another and land in one report; a module
+that fails is named, and the ones after it still run.
+
 `--fast` skips the refresh (`-refresh=false`). On a heavy stack that is the
 single biggest speed-up available, and the summary says so every time, because
 a plan that never looked at reality can report "no changes" for a stack that
@@ -382,7 +395,7 @@ apply, and whichever is installed is used by default), reads terraform's own
 rules, collapsing and formats as everything else, including `--format md`.
 
 The flags that only mean something with a queue behind them — `--all`,
-`--filter`, `--unit`, `--filter-affected`, `--parallelism`, `--resume` — say so rather
+`--filter`, `--filter-affected`, `--parallelism`, `--resume` — say so rather
 than being quietly ignored:
 
 ```

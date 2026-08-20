@@ -85,6 +85,7 @@ Examples:
   tgsieve plan --all --keep-plans ./plans --out-dir ./tfplans
   tgsieve show ./plans --explain
   tgsieve plan --engine terraform               # a plain root module, no terragrunt
+  tgsieve plan --engine terraform -u a -u b     # several root modules, one report
   tgsieve apply --all -- -target=module.eks      # narrow the plan, apply only that
 `
 
@@ -274,9 +275,9 @@ func (c *commonFlags) checkStackFlags(all bool, filters []string, filterAffected
 	}
 	switch {
 	case all:
-		return fmt.Errorf("--all needs terragrunt: the terraform engine plans one root module")
+		return fmt.Errorf("--all needs terragrunt: the terraform engine runs the root modules it is pointed at — name them with --unit")
 	case len(filters) > 0 || filterAffected:
-		return fmt.Errorf("--filter/--filter-affected select units from a terragrunt stack")
+		return fmt.Errorf("--filter/--filter-affected select units from a terragrunt stack; --unit names root modules directly")
 	case parallelism > 0:
 		return fmt.Errorf("--parallelism paces a terragrunt stack; terraform paces itself inside one module")
 	}
@@ -320,7 +321,7 @@ func cmdPlan(args []string) (int, error) {
 	var filters stringList
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
 	var units stringList
-	fs.Var(&units, "unit", "run only this unit directory, repeatable (implies --all)")
+	fs.Var(&units, "unit", "run only this unit or root module directory, repeatable (implies --all under terragrunt)")
 	fs.Var(&units, "u", "shorthand for --unit")
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
@@ -413,14 +414,9 @@ func cmdPlan(args []string) (int, error) {
 	}
 
 	if len(sels) > 0 {
-		discovered, err := runner.Discover(ctx, opts)
-		if err != nil {
-			return exitToolError, fmt.Errorf("listing the units named by --unit: %w", err)
-		}
-		if err := checkUnitsMatch(cf.dir, sels, discovered); err != nil {
+		if err := planSelection(ctx, &opts, cf, sels); err != nil {
 			return exitToolError, err
 		}
-		opts.KnownUnits = discovered
 	}
 
 	if *keepPlans != "" {

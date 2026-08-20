@@ -31,8 +31,8 @@ func TestParseUnitNamesTheUnitItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Query != "envs/prod/eks" {
-		t.Errorf("query = %q, want the unit path", got.Query)
+	if q := got.filterQuery(root); q != "envs/prod/eks" {
+		t.Errorf("query = %q, want the unit path", q)
 	}
 }
 
@@ -44,8 +44,8 @@ func TestParseUnitTakesEverythingUnderAFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Query != "envs/prod/**" {
-		t.Errorf("query = %q, want envs/prod/**", got.Query)
+	if q := got.filterQuery(root); q != "envs/prod/**" {
+		t.Errorf("query = %q, want envs/prod/**", q)
 	}
 }
 
@@ -55,8 +55,8 @@ func TestParseUnitTrimsAndAcceptsAbsolutePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Query != "envs/prod/eks" {
-		t.Errorf("query = %q, want it relative to the working directory", got.Query)
+	if got.Path != "envs/prod/eks" {
+		t.Errorf("path = %q, want it relative to the working directory", got.Path)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestParseUnitPassesPatternsThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal("a pattern names no directory of its own, so it cannot be checked for existence")
 	}
-	if got.Query != "envs/*/eks" || !got.glob {
+	if got.filterQuery(root) != "envs/*/eks" || !got.glob {
 		t.Errorf("pattern = %+v, want it handed to terragrunt as written", got)
 	}
 }
@@ -141,5 +141,92 @@ func TestKeepSelectedDropsPlansNobodyAskedFor(t *testing.T) {
 	keepSelected(&all, nil)
 	if len(all.Units) != 1 {
 		t.Error("no selection means no filtering")
+	}
+}
+
+// modules builds a tree of plain terraform root modules, with a folder that
+// holds none.
+func modules(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, m := range []string{"mods/a", "mods/b"} {
+		dir := filepath.Join(root, filepath.FromSlash(m))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte("\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestDirectDirsResolvesEveryNamedModule(t *testing.T) {
+	root := modules(t)
+	sels, err := parseUnits(root, []string{"mods/a", "mods/b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := directDirs(root, sels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(root, "mods", "a"), filepath.Join(root, "mods", "b")}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("dirs = %v, want %v", got, want)
+	}
+}
+
+func TestDirectDirsExpandsPatternsAndSkipsWhatIsNotAModule(t *testing.T) {
+	root := modules(t)
+	sels, err := parseUnits(root, []string{"*/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := directDirs(root, sels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// notes/ matches the pattern but holds no terraform files.
+	if len(got) != 2 {
+		t.Errorf("dirs = %v, want only the two modules", got)
+	}
+}
+
+func TestDirectDirsRefusesADirectoryTerraformCannotRun(t *testing.T) {
+	root := modules(t)
+	sels, err := parseUnits(root, []string{"notes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := directDirs(root, sels); err == nil {
+		t.Error("a folder with no terraform files is not a root module")
+	}
+
+	// A pattern that lands on nothing is the same mistake, spelled differently.
+	sels, err = parseUnits(root, []string{"mods/z*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := directDirs(root, sels); err == nil {
+		t.Error("a pattern selecting no module must stop the run")
+	}
+}
+
+func TestDirectDirsKeepsEachModuleOnce(t *testing.T) {
+	root := modules(t)
+	sels, err := parseUnits(root, []string{"mods/a", "mods/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := directDirs(root, sels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("dirs = %v, want a and b once each", got)
 	}
 }

@@ -1,21 +1,24 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/imcitius/tgsieve/internal/model"
+	"github.com/imcitius/tgsieve/internal/runner"
 )
 
 // unitSelector is one --unit: the directory someone named, and the terragrunt
 // filter query it turns into.
 type unitSelector struct {
-	Path  string // cleaned, relative to the working directory
-	Query string // what terragrunt filters on
-	glob  bool   // the caller wrote the pattern themselves
+	Path string // cleaned, relative to the working directory
+	glob bool   // the caller wrote the pattern themselves
 }
 
 // unitConfigs are the files that make a directory a unit in its own right,
@@ -55,27 +58,35 @@ func parseUnit(dir, raw string) (unitSelector, error) {
 	}
 	p = filepath.ToSlash(filepath.Clean(p))
 
-	// A pattern is the caller's own business: terragrunt matches it, and a
-	// directory that does not exist yet is not an error in a pattern.
+	// A pattern is the caller's own business: it names no single directory, so
+	// there is nothing to check until something matches it.
 	if hasGlob(p) {
-		return unitSelector{Path: p, Query: p, glob: true}, nil
+		return unitSelector{Path: p, glob: true}, nil
 	}
 
-	full := filepath.Join(dir, filepath.FromSlash(p))
-	info, err := os.Stat(full)
+	info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(p)))
 	switch {
 	case err != nil:
 		return unitSelector{}, fmt.Errorf("--unit %s: no such directory under %s", raw, dir)
 	case !info.IsDir():
 		return unitSelector{}, fmt.Errorf("--unit %s: not a directory", raw)
 	}
-	if isUnitDir(full) {
-		return unitSelector{Path: p, Query: p}, nil
+	return unitSelector{Path: p}, nil
+}
+
+// filterQuery is the terragrunt filter this selector becomes. A unit selects
+// itself; a folder above units selects everything under it, because someone
+// who points at a folder means the work inside it.
+func (s unitSelector) filterQuery(dir string) string {
+	switch {
+	case s.glob:
+		return s.Path
+	case isUnitDir(filepath.Join(dir, filepath.FromSlash(s.Path))):
+		return s.Path
+	case s.Path == ".":
+		return "**"
 	}
-	if p == "." {
-		return unitSelector{Path: p, Query: "**"}, nil
-	}
-	return unitSelector{Path: p, Query: p + "/**"}, nil
+	return s.Path + "/**"
 }
 
 func hasGlob(s string) bool { return strings.ContainsAny(s, "*?[") }
@@ -154,12 +165,91 @@ func checkUnitsMatch(dir string, sels []unitSelector, discovered []string) error
 }
 
 // selectorQueries renders the selectors as terragrunt filter queries.
-func selectorQueries(sels []unitSelector) []string {
+func selectorQueries(dir string, sels []unitSelector) []string {
 	out := make([]string, 0, len(sels))
 	for _, s := range sels {
-		out = append(out, s.Query)
+		out = append(out, s.filterQuery(dir))
 	}
 	return out
+}
+
+// directDirs resolves the selectors against the file system, for the engine
+// that has no terragrunt to ask. Each one has to land on a root module: a
+// directory with terraform files in it, which is the only thing `terraform
+// plan` can be pointed at.
+func directDirs(base string, sels []unitSelector) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	add := func(rel string) {
+		if seen[rel] {
+			return
+		}
+		seen[rel] = true
+		out = append(out, filepath.Join(base, filepath.FromSlash(rel)))
+	}
+	for _, s := range sels {
+		if !s.glob {
+			if !isModuleDir(filepath.Join(base, filepath.FromSlash(s.Path))) {
+				return nil, fmt.Errorf("--unit %s: no terraform files there; --engine terraform runs root modules, one per --unit", s.Path)
+			}
+			add(s.Path)
+			continue
+		}
+		matches, err := modulesMatching(base, s.Path)
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("--unit %s matched no root module under %s: check the pattern", s.Path, base)
+		}
+		for _, m := range matches {
+			add(m)
+		}
+	}
+	return out, nil
+}
+
+// modulesMatching walks for the root modules a pattern selects. Terragrunt
+// does this part itself; without it, this is the walk.
+func modulesMatching(base, pattern string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return err
+		}
+		name := d.Name()
+		if p != base && (strings.HasPrefix(name, ".") || name == "terraform.tfstate.d") {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(base, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel != "." && matchPath(pattern, rel) && isModuleDir(p) {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out, err
+}
+
+// isModuleDir reports whether terraform has anything to plan in a directory.
+func isModuleDir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if n := e.Name(); strings.HasSuffix(n, ".tf") || strings.HasSuffix(n, ".tf.json") {
+			return true
+		}
+	}
+	return false
 }
 
 // keepSelected drops the saved plans nobody asked for, so a run over plans made
@@ -187,15 +277,17 @@ func selectedUnits(cf commonFlags, paths []string, all *bool, filters *stringLis
 	if len(paths) == 0 {
 		return nil, nil
 	}
-	if cf.direct() {
-		return nil, fmt.Errorf("--unit selects units from a terragrunt stack; --engine terraform plans the module in %s", cf.dir)
-	}
 	sels, err := parseUnits(cf.dir, paths)
 	if err != nil {
 		return nil, err
 	}
+	if cf.direct() {
+		// No queue to filter: the terraform engine is pointed at directories,
+		// and --unit is how it gets pointed at more than one.
+		return sels, nil
+	}
 	*all = true
-	*filters = append(*filters, selectorQueries(sels)...)
+	*filters = append(*filters, selectorQueries(cf.dir, sels)...)
 	return sels, nil
 }
 
@@ -206,4 +298,29 @@ func unitPaths(sels []unitSelector) []string {
 		out = append(out, s.Path)
 	}
 	return out
+}
+
+// planSelection resolves --unit into the run: directories for the terraform
+// engine, a filtered queue for terragrunt. Either way a selection that lands
+// on nothing stops here — terragrunt says nothing about a filter that selects
+// nothing, and an empty queue reports "no changes" for infrastructure the run
+// never looked at.
+func planSelection(ctx context.Context, opts *runner.Options, cf commonFlags, sels []unitSelector) error {
+	if cf.direct() {
+		dirs, err := directDirs(cf.dir, sels)
+		if err != nil {
+			return err
+		}
+		opts.Dirs = dirs
+		return nil
+	}
+	discovered, err := runner.Discover(ctx, *opts)
+	if err != nil {
+		return fmt.Errorf("listing the units named by --unit: %w", err)
+	}
+	if err := checkUnitsMatch(cf.dir, sels, discovered); err != nil {
+		return err
+	}
+	opts.KnownUnits = discovered
+	return nil
 }

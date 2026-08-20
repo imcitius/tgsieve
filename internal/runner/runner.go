@@ -42,9 +42,13 @@ type Options struct {
 	KnownUnits     []string // queue already discovered by the caller
 	NoResolveRefs  bool     // skip resolving git refs to commits (offline)
 	Engine         string   // "" for terragrunt, "terraform" to drive it directly
-	Init           bool     // run init first (direct engine only)
-	Progress       *Progress
-	Stderr         io.Writer
+	Dirs           []string // root modules to drive directly, when --unit names more than one
+	// unit labels the module currently running, for the engine that drives
+	// directories itself: terraform names no unit in its own event stream.
+	unit     string
+	Init     bool // run init first (direct engine only)
+	Progress *Progress
+	Stderr   io.Writer
 }
 
 // filterArgs renders the queue filters shared by `find` and `run --all`.
@@ -132,6 +136,9 @@ type Result struct {
 	// durations records how long each unit took when no run report exists,
 	// which is the case when terragrunt is not involved.
 	durations map[string]time.Duration
+	// directFailures are the root modules that failed before writing a plan,
+	// kept aside because Collect only ever sees the ones that succeeded.
+	directFailures []model.Unit
 	// Outputs are the values terraform printed at the end of an apply, when it
 	// reported them structurally.
 	Outputs map[string]any
@@ -189,6 +196,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			if len(units) > 0 {
 				opts.Progress.SetTotal(len(units))
 			}
+		} else if n := len(opts.Dirs); n > 0 {
+			opts.Progress.SetTotal(n)
 		} else {
 			opts.Progress.SetTotal(1)
 		}
@@ -237,6 +246,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				run.Units[i].Duration = d
 			}
 		}
+		// A module that failed wrote no plan for Collect to find, and with
+		// several of them the run has to say which ones.
+		run.Units = append(run.Units, res.directFailures...)
 		if len(run.Units) == 0 && (res.ExitCode != 0 || len(res.Errors) > 0) {
 			run.Units = []model.Unit{{
 				Path: unitName(opts.Dir), Errored: true,
@@ -623,6 +635,7 @@ func streamCmd(ctx context.Context, opts Options, res *Result, cmd *exec.Cmd, di
 
 	waitErr := cmd.Wait()
 	var ee *exec.ExitError
+	res.ExitCode = 0
 	if waitErr != nil {
 		if errors.As(waitErr, &ee) {
 			res.ExitCode = ee.ExitCode()
@@ -816,7 +829,7 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 		if action == "" {
 			action = ev.Change.Action
 		}
-		opts.Progress.Activity.Event("", ev.Type, addr, action)
+		opts.Progress.Activity.Event(opts.unit, ev.Type, addr, action)
 	}
 	switch ev.Type {
 	case "refresh_complete":
