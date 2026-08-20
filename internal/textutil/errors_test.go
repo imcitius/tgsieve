@@ -128,3 +128,51 @@ func TestLocationFindsBothWordings(t *testing.T) {
 		}
 	}
 }
+
+// The shape terragrunt hands over when a unit will not even initialize: a
+// headline that says nothing on its own, and a sentence underneath that says
+// everything.
+const missingArg = `Failed to execute "terraform init" in ./.terragrunt-cache/3i9im7P5r/BdJA7jCy
+  ╷
+  │ Error: Missing required argument
+  │
+  │   on main.tf line 5, in module "env":
+  │    5: module "env" {
+  │
+  │ The argument "tooling_cidr_blocks" is required, but no definition was
+  │ found.
+  ╵
+
+  exit status 1`
+
+func TestWhyKeepsTheSentenceThatNamesTheProblem(t *testing.T) {
+	got := Why(missingArg)
+	if len(got) == 0 {
+		t.Fatal("nothing survived: the reason is the whole point")
+	}
+	if !contains(got[0], `The argument "tooling_cidr_blocks" is required`) {
+		t.Errorf("detail = %q, want the argument named", got[0])
+	}
+	if contains(got[0], "Error: Missing required argument") {
+		t.Errorf("the headline is printed separately, not repeated: %q", got[0])
+	}
+	if len(got) < 2 || got[1] != "at main.tf:5" {
+		t.Errorf("location = %v, want at main.tf:5", got)
+	}
+}
+
+func TestWhyDropsSnippetAndFraming(t *testing.T) {
+	for _, l := range Why(missingArg) {
+		for _, bad := range []string{"5: module", "exit status", "Failed to execute"} {
+			if contains(l, bad) {
+				t.Errorf("line %q should not carry %q", l, bad)
+			}
+		}
+	}
+}
+
+func TestWhyIsEmptyForAHeadlineOnlyError(t *testing.T) {
+	if got := Why("Error: something broke"); len(got) != 0 {
+		t.Errorf("nothing to add, so nothing should be printed: %v", got)
+	}
+}

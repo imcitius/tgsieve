@@ -90,6 +90,7 @@ or from a checkout: `go build -o tgsieve .`
 tgsieve apply                                 # plan, show, ask, then apply exactly that
 tgsieve plan                                  # only the unit in the working directory
 tgsieve plan --all                            # the whole stack below the working directory
+tgsieve apply -u envs/prod/eks -u envs/stage/eks    # only the unit folders you name
 tgsieve plan -C envs/prod --all -- -refresh=false   # args after -- go to terraform
 tgsieve plan --all --keep-plans ./plans       # keep the per-unit tfplan.json
 tgsieve show ./plans --explain                # re-render, no re-run
@@ -120,6 +121,16 @@ running the tool again will not undo.
 
 Outside a terminal it refuses rather than assuming: `--auto-approve` is how you
 say you meant it in CI, and it still prints what is about to be destroyed.
+
+Arguments after `--` go to the plan, so the apply is narrowed with the same
+flags terraform takes:
+
+```bash
+tgsieve apply --all -- -target='module.env.module.eks.aws_eks_addon.this'
+```
+
+They shape the plan, and the apply then runs the plan file that came out of it.
+That is also why `--plans` refuses them: those plans were already made.
 
 To review now and apply later, save the plans and hand them back:
 
@@ -163,6 +174,36 @@ Scoping and pacing a stack run: `--filter <query>` (repeatable),
 `--filter-affected` (only units touched between `main` and `HEAD`) and
 `--parallelism N` are passed through to terragrunt. All three need `--all`,
 because there is no queue to filter or pace without it.
+
+### Naming the units to run
+
+`--unit <dir>` (`-u`) runs only the folders you name, and can be repeated. It
+implies `--all`, because a selection needs a queue to select from:
+
+```bash
+tgsieve plan  -u envs/prod/eks -u envs/stage/eks
+tgsieve apply -u envs/prod/eks -u envs/stage/eks
+```
+
+Name a unit and you get that unit. Name a folder above units and you get
+everything under it, so `-u envs/prod` covers the whole environment. Patterns
+work too (`-u 'envs/*/eks'`), matched against unit paths the way terragrunt
+matches them — `envs/*` selects a unit called `envs/prod`, not the units inside
+it; `envs/**` selects them all.
+
+A path that names nothing stops the run:
+
+```
+--unit envs/prd/eks: no such directory under .
+--unit envs/tools matched no unit under . (12 units in the queue): check the path
+```
+
+That check is the point of the flag over a bare `--filter`: terragrunt says
+nothing about a filter that selects nothing — the queue simply comes back
+empty, and the run reports "no changes" for infrastructure it never looked at.
+
+With `--plans`, `--unit` narrows the saved plans instead, so the report you
+approve is the set that will be applied.
 
 `--fast` skips the refresh (`-refresh=false`). On a heavy stack that is the
 single biggest speed-up available, and the summary says so every time, because
@@ -341,7 +382,7 @@ apply, and whichever is installed is used by default), reads terraform's own
 rules, collapsing and formats as everything else, including `--format md`.
 
 The flags that only mean something with a queue behind them — `--all`,
-`--filter`, `--filter-affected`, `--parallelism`, `--resume` — say so rather
+`--filter`, `--unit`, `--filter-affected`, `--parallelism`, `--resume` — say so rather
 than being quietly ignored:
 
 ```

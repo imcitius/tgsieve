@@ -61,7 +61,7 @@ const usage = `tgsieve — terragrunt plans without the wall of text
 
 Usage:
   tgsieve plan [flags] [-- <tofu/terraform args>]   run a plan and show real changes
-  tgsieve apply [flags]                             plan, show, ask, then apply exactly that
+  tgsieve apply [flags] [-- <tofu/terraform args>]  plan, show, ask, then apply exactly that
   tgsieve show <plan-dir> [flags]                   re-render plans saved earlier
   tgsieve rules [flags]                             print the effective sieve config
   tgsieve presets [name]                            list the built-in rule sets, or show one
@@ -79,11 +79,13 @@ Examples:
   tgsieve plan                                  # this unit only
   tgsieve plan --all                            # the whole stack below here
   tgsieve plan --all --filter-affected          # only what changed vs main
+  tgsieve apply -u envs/prod/eks -u envs/stage/eks   # only these unit folders
   tgsieve plan --all --timings                  # with the slowest units
   tgsieve plan -C envs/prod --all -- -refresh=false
   tgsieve plan --all --keep-plans ./plans --out-dir ./tfplans
   tgsieve show ./plans --explain
   tgsieve plan --engine terraform               # a plain root module, no terragrunt
+  tgsieve apply --all -- -target=module.eks      # narrow the plan, apply only that
 `
 
 func main() {
@@ -317,6 +319,9 @@ func cmdPlan(args []string) (int, error) {
 	tgArgs := fs.String("tg-args", "", "extra terragrunt flags, space separated")
 	var filters stringList
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
+	var units stringList
+	fs.Var(&units, "unit", "run only this unit directory, repeatable (implies --all)")
+	fs.Var(&units, "u", "shorthand for --unit")
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
 	fast := fs.Bool("fast", false, "skip the refresh (-refresh=false): much faster, but blind to out-of-band changes")
@@ -336,6 +341,12 @@ func cmdPlan(args []string) (int, error) {
 		return exitToolError, err
 	}
 	if err := cf.checkEngine(); err != nil {
+		return exitToolError, err
+	}
+	// Named units are a selection from the queue, so they bring the queue with
+	// them: typing --all as well would be a formality.
+	sels, err := selectedUnits(cf, units, all, &filters)
+	if err != nil {
 		return exitToolError, err
 	}
 	if err := cf.checkStackFlags(*all, filters, *filterAffected, *parallelism); err != nil {
@@ -401,6 +412,17 @@ func cmdPlan(args []string) (int, error) {
 		Progress:       prog,
 	}
 
+	if len(sels) > 0 {
+		discovered, err := runner.Discover(ctx, opts)
+		if err != nil {
+			return exitToolError, fmt.Errorf("listing the units named by --unit: %w", err)
+		}
+		if err := checkUnitsMatch(cf.dir, sels, discovered); err != nil {
+			return exitToolError, err
+		}
+		opts.KnownUnits = discovered
+	}
+
 	if *keepPlans != "" {
 		if *lockWait > 0 {
 			fmt.Fprintf(os.Stderr, "waiting up to %s for %s\n", *lockWait, *keepPlans)
@@ -418,7 +440,9 @@ func cmdPlan(args []string) (int, error) {
 		// nothing else compares generations.
 		units := []string{"."}
 		if *all {
-			if found, err := runner.Discover(ctx, opts); err == nil {
+			if found := opts.KnownUnits; len(found) > 0 {
+				units = found
+			} else if found, err := runner.Discover(ctx, opts); err == nil {
 				units = found
 				opts.KnownUnits = found
 			}

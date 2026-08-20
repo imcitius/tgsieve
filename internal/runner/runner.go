@@ -247,9 +247,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	} else {
 		applyReport(&run, reportFile, res.Errors, opts.All)
 	}
-	if !opts.All {
-		ensureUnit(&run, opts, res)
-	}
+	// A stack run normally gets its failed units from the run report; when the
+	// run died before writing one, this is what keeps the errors from
+	// vanishing into an empty report.
+	ensureUnit(&run, opts, res)
 	if res.Interrupted {
 		markInterrupted(&run)
 	}
@@ -439,8 +440,10 @@ func unitName(dir string) string {
 	return filepath.Base(abs)
 }
 
-// ensureUnit makes sure a single-unit run that failed before producing a plan
-// still shows up as a failed unit rather than vanishing.
+// ensureUnit makes sure a run that failed before producing any plan still
+// shows up as a failed unit rather than vanishing. It only fires when nothing
+// at all was collected: with units in hand, terragrunt's run report is the
+// better source, and inventing another entry would double-count one.
 func ensureUnit(run *model.Run, opts Options, res *Result) {
 	if len(run.Units) > 0 {
 		return
@@ -585,13 +588,9 @@ func streamCmd(ctx context.Context, opts Options, res *Result, cmd *exec.Cmd, di
 				}
 				res.Errors = append(res.Errors, msg)
 				if opts.Progress != nil {
-					// The live feed gets the headline; the full blob is kept
-					// for the report at the end.
-					head := textutil.Headline(ll.Msg)
-					if ll.WorkingDir != "" {
-						head = ll.WorkingDir + ": " + head
-					}
-					opts.Progress.Error(head)
+					// The live feed gets the headline and the reason; the full
+					// blob is kept for the report at the end.
+					opts.Progress.Error(ll.WorkingDir, ll.Msg)
 				}
 			case "stdout", "stderr":
 				// The wall of terraform text we exist to replace — but the
@@ -848,7 +847,7 @@ func handleTFEvent(line string, opts Options, res *Result) bool {
 			msg := formatDiagnostic(ev)
 			res.Errors = append(res.Errors, msg)
 			if opts.Progress != nil {
-				opts.Progress.Error(textutil.Headline(msg))
+				opts.Progress.Error("", msg)
 			}
 		}
 	}

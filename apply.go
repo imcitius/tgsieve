@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/imcitius/tgsieve/internal/model"
 	"github.com/imcitius/tgsieve/internal/render"
 	"github.com/imcitius/tgsieve/internal/runner"
 	"github.com/imcitius/tgsieve/internal/sieve"
@@ -37,22 +38,40 @@ func cmdApply(args []string) (int, error) {
 	tgArgs := fs.String("tg-args", "", "extra terragrunt flags, space separated")
 	var filters stringList
 	fs.Var(&filters, "filter", "terragrunt filter query, repeatable (requires --all)")
+	var units stringList
+	fs.Var(&units, "unit", "apply only this unit directory, repeatable (implies --all)")
+	fs.Var(&units, "u", "shorthand for --unit")
 	filterAffected := fs.Bool("filter-affected", false, "only units affected by changes between main and HEAD (requires --all)")
 	parallelism := fs.Int("parallelism", 0, "max units terragrunt runs at once (requires --all)")
 	lockWait := fs.Duration("lock-wait", 0, "how long to wait for a busy --plans directory (e.g. 2m)")
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "tgsieve apply [flags]\n\n"+
-			"Plans, shows what would change, asks, then applies exactly those plans.\n\n")
+		fmt.Fprint(os.Stderr, "tgsieve apply [flags] [-- <tofu/terraform args>]\n\n"+
+			"Plans, shows what would change, asks, then applies exactly those plans.\n"+
+			"Arguments after -- go to the plan, so -target=… narrows what is applied.\n"+
+			"--unit <dir> narrows it to whole unit folders instead.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return exitToolError, err
 	}
+	if err := cf.checkEngine(); err != nil {
+		return exitToolError, err
+	}
+	// Named units are a selection from the queue, so they bring the queue with
+	// them: typing --all as well would be a formality.
+	sels, err := selectedUnits(cf, units, all, &filters)
+	if err != nil {
+		return exitToolError, err
+	}
 	if (len(filters) > 0 || *filterAffected) && !*all {
 		return exitToolError, fmt.Errorf("--filter/--filter-affected select units from a stack: add --all")
 	}
-	if err := cf.checkEngine(); err != nil {
-		return exitToolError, err
+	// Arguments after -- shape the plan; the apply then runs that saved plan
+	// file, which terraform refuses to combine with plan-time options anyway.
+	tfArgs := fs.Args()
+	if len(tfArgs) > 0 && *plans != "" {
+		return exitToolError, fmt.Errorf("arguments after -- shape a plan, and --plans applies plans made earlier: pass %s to the run that makes them",
+			strings.Join(tfArgs, " "))
 	}
 	if err := cf.checkStackFlags(*all, filters, *filterAffected, *parallelism); err != nil {
 		return exitToolError, err
@@ -111,7 +130,23 @@ func cmdApply(args []string) (int, error) {
 
 	now := runner.CurrentProvenance(ctx, cf.dir, "apply", version)
 
+	if len(sels) > 0 && !reused {
+		// A --unit that names nothing selects nothing, and terragrunt would
+		// run the empty queue without complaint: better to say so than to
+		// report "no changes" for infrastructure nobody looked at.
+		discovered, err := runner.Discover(ctx, opts)
+		if err != nil {
+			return exitToolError, fmt.Errorf("listing the units named by --unit: %w", err)
+		}
+		if err := checkUnitsMatch(cf.dir, sels, discovered); err != nil {
+			return exitToolError, err
+		}
+		opts.KnownUnits = discovered
+	}
+
 	// Phase one: get plans to look at.
+	var planned *model.Run
+	var planTFPath string
 	if reused {
 		// Plans made against different code describe a world that no longer
 		// exists; applying them is the one mistake this command must not make
@@ -124,18 +159,44 @@ func cmdApply(args []string) (int, error) {
 		planOpts.Command = "plan"
 		planOpts.JSONOutDir = planDir
 		planOpts.OutDir = planDir
-		if _, err := runner.Run(ctx, planOpts); err != nil {
+		planOpts.TFArgs = tfArgs
+		res, err := runner.Run(ctx, planOpts)
+		if err != nil {
 			return exitToolError, err
 		}
+		if res.Interrupted {
+			fmt.Fprintln(os.Stderr, "interrupted — nothing was applied")
+			return exitInterrupt, nil
+		}
+		// The plan run knows which units failed before writing a plan file;
+		// the plan directory does not, and reading it back would turn a failed
+		// stack into an empty one.
+		planned = &res.Run
+		planTFPath = res.TFPath
 	}
 
-	run, err := runner.Collect(planDir)
-	if err != nil {
-		return exitToolError, err
+	run := model.Run{}
+	if planned != nil {
+		run = *planned
+	} else {
+		collected, err := runner.Collect(planDir)
+		if err != nil {
+			return exitToolError, err
+		}
+		run = collected
+		// The plans on disk cover the whole stack that was planned; only the
+		// named units are going to be applied, so only they belong in the
+		// report that the question is asked about.
+		keepSelected(&run, sels)
+		if len(sels) > 0 && len(run.Units) == 0 {
+			return exitToolError, fmt.Errorf("--unit %s matched none of the plans in %s",
+				strings.Join(unitPaths(sels), ", "), planDir)
+		}
 	}
 	runner.ApplyTimings(planDir, &run)
 	rep := sieve.Apply(run, cfg)
 	rep.Direct = cf.direct()
+	rep.TFPath = planTFPath
 	// A machine-readable apply emits one document at the end describing both
 	// what was planned and what happened; printing the plan first would leave
 	// consumers with two documents on one stream.

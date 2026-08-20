@@ -101,6 +101,44 @@ func CleanError(s string, max int) []string {
 	return lines
 }
 
+var (
+	onLineRe   = regexp.MustCompile(`^on (\S+) line (\d+)`)
+	codeLineRe = regexp.MustCompile(`^\d+:\s`)
+	noiseRe    = regexp.MustCompile(`^(TIP|exit status|Encountered an error|Run failed)`)
+)
+
+// Why is the part of a diagnostic that says what actually went wrong: the
+// detail under the headline, folded to one line, and where it happened.
+// "Error: Missing required argument" on its own sends nobody anywhere; the
+// sentence naming the argument does.
+func Why(s string) []string {
+	lines := CleanError(s, 0)
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "Error:") {
+		lines = lines[1:]
+	}
+	var body []string
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		switch {
+		case t == "", t == "…":
+		case onLineRe.MatchString(t), codeLineRe.MatchString(t):
+			// Where it happened, said again below as file:line.
+		case strings.HasPrefix(t, "Error:"), noiseRe.MatchString(t):
+			// A second diagnostic, or terragrunt framing around this one.
+		default:
+			body = append(body, t)
+		}
+	}
+	var out []string
+	if len(body) > 0 {
+		out = append(out, strings.Join(body, " "))
+	}
+	if loc := Location(s); loc != "" {
+		out = append(out, "at "+loc)
+	}
+	return out
+}
+
 var locationRe = regexp.MustCompile(`\bat ([^\s:]+:\d+)`)
 
 // Location pulls "file:line" out of a diagnostic, so failures that share a

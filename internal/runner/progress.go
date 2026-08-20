@@ -138,14 +138,24 @@ func (p *Progress) Unit(dir string) {
 // heads-up while the run is going; the report underneath carries the detail.
 const errorLine = 120
 
-func (p *Progress) Error(msg string) {
+// Error reports one diagnostic as it happens: the headline on the ✗ line,
+// and under it the sentence that says what to fix. unit is where it came from,
+// or "" when nothing named it.
+func (p *Progress) Error(unit, msg string) {
 	msg = strings.TrimSpace(msg)
+	head := textutil.Headline(msg)
+	why := textutil.Why(msg)
+	// The same failure repeated across units is one thing to fix, so what has
+	// been shown is judged on the diagnostic alone, not on who reported it.
+	key := textutil.NormalizeError(head + " " + strings.Join(why, " "))
+	if unit != "" {
+		head = unit + ": " + head
+	}
 	p.mu.Lock()
 	p.errors++
 	if p.seen == nil {
 		p.seen = map[string]int{}
 	}
-	key := textutil.NormalizeError(textutil.Headline(msg))
 	p.seen[key]++
 	repeat := p.seen[key] > 1
 	if repeat {
@@ -157,7 +167,10 @@ func (p *Progress) Error(msg string) {
 		return
 	}
 	p.clear()
-	fmt.Fprintf(p.w, "%s %s\n", p.red("✗"), truncate(msg, errorLine))
+	fmt.Fprintf(p.w, "%s %s\n", p.red("✗"), truncate(head, errorLine))
+	for _, l := range why {
+		fmt.Fprintf(p.w, "  %s\n", p.dim(truncate(l, errorLine)))
+	}
 	p.draw()
 }
 

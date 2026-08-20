@@ -657,3 +657,57 @@ func TestDirectApplyFailureKeepsTheReason(t *testing.T) {
 		t.Errorf("wrong error picked: %q", got)
 	}
 }
+
+func TestErrorFeedShowsWhyNotJustTheHeadline(t *testing.T) {
+	// "Error: Missing required argument" with nothing under it sends the
+	// reader back to running terragrunt by hand to find out which argument.
+	msg := "╷\n│ Error: Missing required argument\n│\n│   on main.tf line 5, in module \"env\":\n│    5: module \"env\" {\n│\n│ The argument \"tooling_cidr_blocks\" is required, but no definition was\n│ found.\n╵"
+	var buf strings.Builder
+	p := NewProgress(&buf, false, false)
+	p.Error("envs/infra/tooling", msg)
+
+	out := buf.String()
+	if !strings.Contains(out, "envs/infra/tooling: Error: Missing required argument") {
+		t.Errorf("the ✗ line should name the unit and the error:\n%s", out)
+	}
+	if !strings.Contains(out, `tooling_cidr_blocks`) {
+		t.Errorf("the reason is missing:\n%s", out)
+	}
+	if !strings.Contains(out, "at main.tf:5") {
+		t.Errorf("where it happened is missing:\n%s", out)
+	}
+}
+
+func TestErrorFeedFoldsTheSameFailureAcrossUnits(t *testing.T) {
+	msg := "Error: Missing required argument\n\nThe argument \"x\" is required, but no definition was found."
+	var buf strings.Builder
+	p := NewProgress(&buf, false, false)
+	p.Error("envs/a", msg)
+	p.Error("envs/b", msg)
+
+	if n := strings.Count(buf.String(), "✗"); n != 1 {
+		t.Errorf("one failure, one line — got %d:\n%s", n, buf.String())
+	}
+	if p.suppressed != 1 {
+		t.Errorf("suppressed = %d, want 1", p.suppressed)
+	}
+}
+
+func TestStackRunWithNoPlansStillReportsTheFailure(t *testing.T) {
+	// terragrunt died before writing a run report, so nothing named a unit.
+	// Reporting "0 units · 0 failed" here would call a broken stack fine.
+	dir := t.TempDir()
+	run := model.Run{}
+	res := &Result{ExitCode: 1, Errors: []string{"Error: Missing required argument"}}
+	ensureUnit(&run, Options{Dir: dir, All: true}, res)
+
+	if len(run.Units) != 1 {
+		t.Fatalf("units = %d, want the failure to show up as one", len(run.Units))
+	}
+	if !run.Units[0].Errored {
+		t.Error("the unit should be marked failed")
+	}
+	if !strings.Contains(run.Units[0].Error, "Missing required argument") {
+		t.Errorf("the error was lost: %q", run.Units[0].Error)
+	}
+}

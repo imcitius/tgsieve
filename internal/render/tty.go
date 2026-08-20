@@ -384,7 +384,11 @@ func others(locations []string, detail []string) []string {
 	shown := strings.Join(detail, "\n")
 	out := make([]string, 0, len(locations))
 	for _, loc := range locations {
-		if strings.Contains(shown, loc) {
+		// terraform writes the same place two ways: "main.tf:5" in its own
+		// messages, "on main.tf line 5" in a diagnostic. Both are the place
+		// the reader is already looking at.
+		file, line, _ := strings.Cut(loc, ":")
+		if strings.Contains(shown, loc) || strings.Contains(shown, "on "+file+" line "+line) {
 			continue
 		}
 		out = append(out, loc)
